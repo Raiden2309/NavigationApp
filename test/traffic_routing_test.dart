@@ -101,6 +101,39 @@ void main() {
       expect(plan.waypointOrder, [1, 0, 2]);
     });
 
+    test('keeps a departure of "now" far enough ahead to still be in the future',
+        () async {
+      late Map<String, dynamic> body;
+      final now = DateTime(2026, 7, 27, 9);
+      final service = GoogleDirectionsService(
+        apiKey: 'k',
+        repriceLegs: false,
+        now: () => now,
+        client: MockClient((request) async {
+          body = _bodyOf(request);
+          return http.Response(
+            _response(legs: 1, staticSeconds: 600, trafficSeconds: 600),
+            200,
+          );
+        }),
+      );
+
+      // Google rejects a timestamp that has passed by the time the request
+      // lands, so "leave now" must be sent with a cushion.
+      await service.optimizedRoute(
+        origin: _origin,
+        destinations: [_b],
+        departureTime: now,
+      );
+
+      expect(
+        DateTime.parse(body['departureTime'] as String)
+            .difference(now)
+            .inSeconds,
+        greaterThanOrEqualTo(30),
+      );
+    });
+
     test('clamps a departure time in the past to now', () async {
       late Map<String, dynamic> body;
       final now = DateTime(2026, 7, 27, 9);

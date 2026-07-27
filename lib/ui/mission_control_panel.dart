@@ -154,6 +154,11 @@ class _DestinationEditorState extends State<_DestinationEditor> {
   List<PlaceSuggestion> _suggestions = const [];
   bool _searching = false;
   String? _searchError;
+  String _query = '';
+  String? _searchedQuery;
+
+  /// Guards against a slow earlier request overwriting the newest results.
+  int _searchGeneration = 0;
   late GeoPoint _location = widget.point?.location ?? widget.near;
   late String? _address = widget.point?.address;
 
@@ -167,13 +172,19 @@ class _DestinationEditorState extends State<_DestinationEditor> {
   }
 
   void _onQueryChanged(String query) {
+    setState(() => _query = query);
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 350), () => _runSearch(query));
   }
 
   Future<void> _runSearch(String query) async {
-    if (query.trim().isEmpty) {
-      setState(() => _suggestions = const []);
+    final generation = ++_searchGeneration;
+    if (query.trim().length < minSearchLength) {
+      setState(() {
+        _suggestions = const [];
+        _searchedQuery = null;
+        _searching = false;
+      });
       return;
     }
     setState(() {
@@ -182,19 +193,48 @@ class _DestinationEditorState extends State<_DestinationEditor> {
     });
     try {
       final results = await widget.places.search(query, near: widget.near);
-      if (mounted) setState(() => _suggestions = results);
+      if (mounted && generation == _searchGeneration) {
+        setState(() {
+          _suggestions = results;
+          _searchedQuery = query;
+        });
+      }
     } catch (error) {
-      if (mounted) setState(() => _searchError = '$error');
+      if (mounted && generation == _searchGeneration) {
+        setState(() => _searchError = _describe(error));
+      }
     } finally {
-      if (mounted) setState(() => _searching = false);
+      if (mounted && generation == _searchGeneration) {
+        setState(() => _searching = false);
+      }
     }
+  }
+
+  /// Google's errors are JSON blobs; the operator only needs the gist.
+  String _describe(Object error) => switch (error) {
+        PlacesException() => 'Place search is unavailable right now.',
+        _ => '$error',
+      };
+
+  /// Why the suggestion list is empty, if it is.
+  String? get _emptyStateMessage {
+    if (_searching || _suggestions.isNotEmpty || _searchError != null) return null;
+    final query = _query.trim();
+    if (query.isEmpty) return null;
+    if (query.length < minSearchLength) {
+      return 'Keep typing — at least $minSearchLength characters.';
+    }
+    return _searchedQuery == null ? null : 'No places match "$_searchedQuery".';
   }
 
   Future<void> _select(PlaceSuggestion suggestion) async {
     try {
       final place = await widget.places.resolve(suggestion);
       if (place == null || !mounted) return;
+      _searchGeneration++;
       setState(() {
+        _query = place.name;
+        _searchedQuery = null;
         _location = place.location;
         _address = place.address;
         _label.text = place.name;
@@ -202,7 +242,7 @@ class _DestinationEditorState extends State<_DestinationEditor> {
         _search.text = place.name;
       });
     } catch (error) {
-      if (mounted) setState(() => _searchError = '$error');
+      if (mounted) setState(() => _searchError = _describe(error));
     }
   }
 
@@ -239,6 +279,11 @@ class _DestinationEditorState extends State<_DestinationEditor> {
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(_searchError!, style: TextStyle(color: theme.colorScheme.error)),
+                ),
+              if (_emptyStateMessage != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(_emptyStateMessage!, style: theme.textTheme.bodySmall),
                 ),
               if (_suggestions.isNotEmpty)
                 ConstrainedBox(

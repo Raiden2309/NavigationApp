@@ -28,6 +28,7 @@ class OperatorPanel extends StatelessWidget {
           stopsLeft: etas.length,
           driveTime: engine.remainingDriveTime,
           trafficDelay: engine.remainingTrafficDelay,
+          routeMissing: engine.routeOrder.isEmpty && engine.lastError != null,
         ),
         const SizedBox(height: 12),
         if (current != null) _NextStopCard(engine: engine, eta: current, now: now),
@@ -62,6 +63,7 @@ class _MissionSummary extends StatelessWidget {
     required this.stopsLeft,
     required this.driveTime,
     required this.trafficDelay,
+    required this.routeMissing,
   });
 
   final DateTime? completion;
@@ -70,6 +72,9 @@ class _MissionSummary extends StatelessWidget {
   final int stopsLeft;
   final Duration driveTime;
   final Duration trafficDelay;
+
+  /// The last routing request failed, so there is no plan to show yet.
+  final bool routeMissing;
 
   @override
   Widget build(BuildContext context) {
@@ -84,7 +89,11 @@ class _MissionSummary extends StatelessWidget {
             Text('Mission completion ETA', style: theme.textTheme.labelLarge),
             const SizedBox(height: 4),
             Text(
-              completion == null ? 'Mission complete' : formatClockTime(completion!),
+              completion != null
+                  ? formatClockTime(completion!)
+                  : routeMissing
+                      ? 'No route'
+                      : 'Mission complete',
               style: theme.textTheme.headlineMedium,
             ),
             if (completion != null)

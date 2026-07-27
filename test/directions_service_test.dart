@@ -62,5 +62,14 @@ void main() {
       expect(points[2].latitude, closeTo(43.252, 0.00001));
       expect(points[2].longitude, closeTo(-126.453, 0.00001));
     });
+
+    test('stays on the planet when compiled to JavaScript', () {
+      // Negative deltas used to be decoded with `~`, which is unsigned on web
+      // and threw the coordinates into the billions.
+      for (final point in decodePolyline('_p~iF~ps|U_ulLnnqC_mqNvxq`@')) {
+        expect(point.latitude.abs(), lessThanOrEqualTo(90));
+        expect(point.longitude.abs(), lessThanOrEqualTo(180));
+      }
+    });
   });
 }

@@ -29,6 +29,9 @@ class PlaceSuggestion {
   final GeoPoint? location;
 }
 
+/// Shortest query that is worth sending to a place search.
+const int minSearchLength = 3;
+
 /// Turns what a mission operator types into real world coordinates.
 abstract class PlacesService {
   /// Suggestions for [query], biased towards [near] when given.
@@ -65,14 +68,17 @@ class GooglePlacesService implements PlacesService {
 
   @override
   Future<List<PlaceSuggestion>> search(String query, {GeoPoint? near}) async {
-    if (query.trim().length < 3) return const [];
+    if (query.trim().length < minSearchLength) return const [];
+    // A bias outside the WGS84 range makes the whole request fail, so a bad
+    // fix costs the bias rather than the search.
+    final bias = near != null && _isValid(near) ? near : null;
     final body = await _post('/places:autocomplete', {
       'input': query,
       'sessionToken': ?sessionToken,
-      if (near != null)
+      if (bias != null)
         'locationBias': {
           'circle': {
-            'center': {'latitude': near.latitude, 'longitude': near.longitude},
+            'center': {'latitude': bias.latitude, 'longitude': bias.longitude},
             'radius': searchRadiusMeters.toDouble(),
           },
         },
@@ -123,6 +129,7 @@ class GooglePlacesService implements PlacesService {
   /// dropped pin names the stop.
   @override
   Future<Place?> reverseGeocode(GeoPoint location) async {
+    if (!_isValid(location)) return null;
     final body = await _post('/places:searchNearby', {
       'locationRestriction': {
         'circle': {
@@ -169,6 +176,9 @@ class GooglePlacesService implements PlacesService {
         'X-Goog-Api-Key': apiKey,
         'X-Goog-FieldMask': ?fieldMask,
       };
+
+  bool _isValid(GeoPoint point) =>
+      point.latitude.abs() <= 90 && point.longitude.abs() <= 180;
 
   Map<String, dynamic> _decode(http.Response response) {
     if (response.statusCode != 200) {

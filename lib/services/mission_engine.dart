@@ -39,6 +39,7 @@ class MissionEngine extends ChangeNotifier {
     MissionClock? clock,
     this.arrivalRadiusMeters = 40,
     this.refreshInterval = const Duration(milliseconds: 500),
+    this.planRetryInterval = const Duration(seconds: 10),
   })  : _destinations = List.of(destinations),
         _directions = directionsService,
         _location = locationService,
@@ -51,6 +52,10 @@ class MissionEngine extends ChangeNotifier {
   final double arrivalRadiusMeters;
   final Duration refreshInterval;
 
+  /// Minimum wall-clock gap between attempts to re-plan a mission that has no
+  /// route because the last routing request failed.
+  final Duration planRetryInterval;
+
   final List<MissionPoint> _destinations;
   StreamSubscription<OperatorPosition>? _subscription;
   Timer? _ticker;
@@ -61,6 +66,7 @@ class MissionEngine extends ChangeNotifier {
   MissionStatus _status = MissionStatus.planning;
   bool _replanning = false;
   Object? _lastError;
+  DateTime? _lastPlanAttempt;
 
   /// Every destination after the starting point, in the order the mission
   /// operator entered them.
@@ -209,7 +215,6 @@ class MissionEngine extends ChangeNotifier {
 
   void _onPosition(OperatorPosition position) {
     _operatorPosition = position.point;
-    _lastError = null;
     _refresh();
   }
 
@@ -220,6 +225,7 @@ class MissionEngine extends ChangeNotifier {
 
   void _refresh() {
     if (!isRunning) {
+      _retryPlanning();
       notifyListeners();
       return;
     }
@@ -239,6 +245,19 @@ class MissionEngine extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  /// A route request can fail transiently (rate limit, a dropped connection);
+  /// without a route there is nothing for the operator to start, so keep
+  /// re-planning in the background instead of stranding the mission.
+  void _retryPlanning() {
+    if (_lastError == null || _replanning || _routeOrder.isNotEmpty) return;
+    if (_destinations.every((p) => p.isCompleted)) return;
+    final last = _lastPlanAttempt;
+    final now = DateTime.now();
+    if (last != null && now.difference(last) < planRetryInterval) return;
+    _lastPlanAttempt = now;
+    unawaited(_replan().then((_) => notifyListeners()));
   }
 
   void _arriveAt(MissionPoint stop) {

@@ -206,6 +206,10 @@ class GoogleDirectionsService implements DirectionsService {
 
   final DateTime Function() _now;
 
+  /// How far ahead of now a departure time is pushed when the caller asks to
+  /// leave immediately.
+  static const Duration departureCushion = Duration(seconds: 60);
+
   static const _fieldMask = 'routes.optimizedIntermediateWaypointIndex,'
       'routes.legs.duration,routes.legs.staticDuration,routes.legs.distanceMeters,'
       'routes.legs.startLocation,routes.legs.endLocation,'
@@ -328,11 +332,12 @@ class GoogleDirectionsService implements DirectionsService {
         },
       };
 
-  /// Traffic-aware routing requires a departure time in the future; a plan made
-  /// for a moment that has already passed falls back to now.
+  /// Traffic-aware routing rejects a departure time that is not in the future,
+  /// so a departure of "now" is pushed past the request's own round trip and
+  /// any clock skew between this device and Google.
   String _departureParam(DateTime departure) {
-    final now = _now();
-    final effective = departure.isAfter(now) ? departure : now.add(const Duration(seconds: 30));
+    final earliest = _now().add(departureCushion);
+    final effective = departure.isAfter(earliest) ? departure : earliest;
     return effective.toUtc().toIso8601String();
   }
 
@@ -403,5 +408,9 @@ int _decodeValue(String encoded, int start, void Function(int) setIndex) {
     shift += 5;
   } while (byte >= 0x20);
   setIndex(index);
-  return (result & 1) != 0 ? ~(result >> 1) : result >> 1;
+  // A trailing 1 bit marks a negative value. `~` is avoided: compiled to
+  // JavaScript it yields an unsigned 32-bit result, which sends the decoded
+  // coordinates off the planet.
+  final magnitude = result >> 1;
+  return (result & 1) != 0 ? -magnitude - 1 : magnitude;
 }
