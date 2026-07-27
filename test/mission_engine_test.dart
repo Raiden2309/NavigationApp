@@ -22,6 +22,35 @@ class ManualClock implements MissionClock {
   double get timeScale => 1;
 }
 
+/// Fails route requests until [failures] have been served.
+class FlakyDirectionsService implements DirectionsService {
+  FlakyDirectionsService(this.failures);
+
+  int failures;
+  int calls = 0;
+  final DirectionsService _delegate = MockDirectionsService();
+
+  @override
+  Future<RoutePlan> optimizedRoute({
+    required GeoPoint origin,
+    required List<GeoPoint> destinations,
+    DateTime? departureTime,
+    List<Duration> dwellTimes = const [],
+  }) async {
+    calls++;
+    if (failures > 0) {
+      failures--;
+      throw DirectionsException('temporarily unavailable');
+    }
+    return _delegate.optimizedRoute(
+      origin: origin,
+      destinations: destinations,
+      departureTime: departureTime,
+      dwellTimes: dwellTimes,
+    );
+  }
+}
+
 class FakeLocationService implements LocationService {
   final StreamController<OperatorPosition> _controller =
       StreamController<OperatorPosition>.broadcast();
@@ -185,6 +214,31 @@ void main() {
 
     await engine.removeDestination(first.id);
     expect(engine.destinations.any((p) => p.id == first.id), isTrue);
+  });
+
+  test('re-plans in the background after a routing failure', () async {
+    clock = ManualClock(DateTime(2026, 1, 1, 8));
+    location = FakeLocationService();
+    final directions = FlakyDirectionsService(1);
+    engine = MissionEngine(
+      startingPoint: stop('a', 'Point A', start),
+      destinations: [stop('b', 'Point B', pointB)],
+      directionsService: directions,
+      locationService: location,
+      clock: clock,
+      refreshInterval: const Duration(milliseconds: 10),
+      planRetryInterval: Duration.zero,
+    );
+    await engine.initialize();
+
+    expect(engine.routeOrder, isEmpty);
+    expect(engine.lastError, isA<DirectionsException>());
+
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(directions.calls, greaterThan(1));
+    expect(engine.routeOrder, hasLength(1));
+    expect(engine.lastError, isNull);
   });
 
   test('the mission finishes once the last stop is served', () async {

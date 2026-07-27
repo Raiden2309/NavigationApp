@@ -66,6 +66,7 @@ class MissionEngine extends ChangeNotifier {
   MissionStatus _status = MissionStatus.planning;
   bool _replanning = false;
   Object? _lastError;
+  bool _planFailed = false;
   DateTime? _lastPlanAttempt;
 
   /// Every destination after the starting point, in the order the mission
@@ -224,8 +225,8 @@ class MissionEngine extends ChangeNotifier {
   }
 
   void _refresh() {
+    _retryPlanning();
     if (!isRunning) {
-      _retryPlanning();
       notifyListeners();
       return;
     }
@@ -247,11 +248,11 @@ class MissionEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// A route request can fail transiently (rate limit, a dropped connection);
-  /// without a route there is nothing for the operator to start, so keep
-  /// re-planning in the background instead of stranding the mission.
+  /// A route request can fail transiently (rate limit, a dropped connection),
+  /// leaving the operator with no route at all or a stale one, so keep
+  /// re-planning in the background until one succeeds.
   void _retryPlanning() {
-    if (_lastError == null || _replanning || _routeOrder.isNotEmpty) return;
+    if (!_planFailed || _replanning) return;
     if (_destinations.every((p) => p.isCompleted)) return;
     final last = _lastPlanAttempt;
     final now = DateTime.now();
@@ -345,8 +346,10 @@ class MissionEngine extends ChangeNotifier {
       }
       _followPlan();
       _lastError = null;
+      _planFailed = false;
     } catch (error) {
       _lastError = error;
+      _planFailed = true;
     } finally {
       _replanning = false;
     }
