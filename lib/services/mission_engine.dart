@@ -41,7 +41,12 @@ class MissionEngine extends ChangeNotifier {
     this.refreshInterval = const Duration(milliseconds: 500),
     this.planRetryInterval = const Duration(seconds: 10),
     this.reoptimizeInterval = const Duration(minutes: 5),
-  })  : _destinations = List.of(destinations),
+    bool optimizeOrder = false,
+    // A named parameter cannot be private, so the field below cannot be an
+    // initializing formal.
+    // ignore: prefer_initializing_formals
+  })  : _optimizeOrder = optimizeOrder,
+        _destinations = List.of(destinations),
         _directions = directionsService,
         _location = locationService,
         clock = clock ?? const SystemClock();
@@ -62,6 +67,7 @@ class MissionEngine extends ChangeNotifier {
   final Duration reoptimizeInterval;
 
   final List<MissionPoint> _destinations;
+  bool _optimizeOrder;
   StreamSubscription<OperatorPosition>? _subscription;
   Timer? _ticker;
   RoutePlan _plan = RoutePlan.empty;
@@ -83,8 +89,20 @@ class MissionEngine extends ChangeNotifier {
   /// operator entered them.
   List<MissionPoint> get destinations => List.unmodifiable(_destinations);
 
-  /// Remaining stops in optimized visiting order.
+  /// Remaining stops in visiting order.
   List<MissionPoint> get routeOrder => List.unmodifiable(_routeOrder);
+
+  /// Whether the router may re-order the stops for the fastest route. Off by
+  /// default: the stops are served in the order the mission operator listed
+  /// them, so the newest customer queues last.
+  bool get optimizeOrder => _optimizeOrder;
+
+  Future<void> setOptimizeOrder(bool value) async {
+    if (_optimizeOrder == value) return;
+    _optimizeOrder = value;
+    await _replan();
+    notifyListeners();
+  }
 
   RoutePlan get plan => _plan;
 
@@ -182,11 +200,27 @@ class MissionEngine extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Moves a destination [delta] places up or down the priority queue. The
+  /// visiting order follows that queue unless [optimizeOrder] is on.
+  Future<void> moveDestination(String id, int delta) async {
+    final index = _destinations.indexWhere((p) => p.id == id);
+    final target = index + delta;
+    if (index < 0 || target < 0 || target >= _destinations.length) return;
+    // A stop already served, or being served right now, keeps its place.
+    if (_isLocked(_destinations[index]) || _isLocked(_destinations[target])) return;
+    final point = _destinations.removeAt(index);
+    _destinations.insert(target, point);
+    await _replan();
+    notifyListeners();
+  }
+
+  bool _isLocked(MissionPoint point) =>
+      point.isCompleted || point.status == MissionPointStatus.onSite;
+
   Future<void> removeDestination(String id) async {
     final index = _destinations.indexWhere((p) => p.id == id);
     if (index < 0) return;
-    final point = _destinations[index];
-    if (point.isCompleted || point.status == MissionPointStatus.onSite) return;
+    if (_isLocked(_destinations[index])) return;
     _destinations.removeAt(index);
     await _replan();
     notifyListeners();
@@ -336,8 +370,8 @@ class MissionEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Recomputes the optimal route through every stop that is still pending,
-  /// starting from wherever the operator currently is.
+  /// Recomputes the route through every stop that is still pending, starting
+  /// from wherever the operator currently is.
   ///
   /// Re-plans are queued rather than dropped: a background re-optimization
   /// must not swallow the re-plan that follows an edit or a completed stop,
@@ -374,6 +408,7 @@ class MissionEngine extends ChangeNotifier {
         destinations: [for (final p in optimizable) p.location],
         departureTime: departure,
         dwellTimes: [for (final p in optimizable) p.dwellTime],
+        optimizeOrder: _optimizeOrder,
       );
       // A waypoint order that is short, or holds an index the route no longer
       // has, must not drop a stop or blow up the mission: unplaced stops keep

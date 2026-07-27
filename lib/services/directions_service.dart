@@ -25,6 +25,10 @@ abstract class DirectionsService {
     /// On-site time per entry of [destinations], added between legs when
     /// predicting each leg's departure time.
     List<Duration> dwellTimes = const [],
+
+    /// Whether the stops may be re-ordered for the fastest route. When false
+    /// they are driven in the order given, e.g. by customer priority.
+    bool optimizeOrder = true,
   });
 }
 
@@ -54,9 +58,12 @@ class MockDirectionsService implements DirectionsService {
     required List<GeoPoint> destinations,
     DateTime? departureTime,
     List<Duration> dwellTimes = const [],
+    bool optimizeOrder = true,
   }) async {
     if (destinations.isEmpty) return RoutePlan.empty;
-    final order = _solveOrder(origin, destinations);
+    final order = optimizeOrder
+        ? _solveOrder(origin, destinations)
+        : [for (var i = 0; i < destinations.length; i++) i];
     final legs = <RouteLeg>[];
     var from = origin;
     var cursor = departureTime ?? DateTime.now();
@@ -225,6 +232,7 @@ class GoogleDirectionsService implements DirectionsService {
     required List<GeoPoint> destinations,
     DateTime? departureTime,
     List<Duration> dwellTimes = const [],
+    bool optimizeOrder = true,
   }) async {
     if (destinations.isEmpty) return RoutePlan.empty;
     final start = departureTime ?? _now();
@@ -235,11 +243,16 @@ class GoogleDirectionsService implements DirectionsService {
       destination: destinations.last,
       intermediates: intermediates,
       departure: start,
+      optimizeOrder: optimizeOrder,
     );
 
     final optimized = (route['optimizedIntermediateWaypointIndex'] as List?) ?? const [];
+    // Without optimization Google keeps the intermediates in the order sent.
     final waypointOrder = [
-      for (final index in optimized) index as int,
+      if (optimizeOrder)
+        for (final index in optimized) index as int
+      else
+        for (var i = 0; i < intermediates.length; i++) i,
       destinations.length - 1,
     ];
     var legs = [
@@ -296,12 +309,14 @@ class GoogleDirectionsService implements DirectionsService {
     required GeoPoint destination,
     required List<GeoPoint> intermediates,
     required DateTime departure,
+    bool optimizeOrder = true,
   }) async {
-    final optimizing = intermediates.isNotEmpty;
+    final optimizing = optimizeOrder && intermediates.isNotEmpty;
     final body = {
       'origin': _waypoint(origin),
       'destination': _waypoint(destination),
-      if (optimizing) 'intermediates': [for (final point in intermediates) _waypoint(point)],
+      if (intermediates.isNotEmpty)
+        'intermediates': [for (final point in intermediates) _waypoint(point)],
       'travelMode': 'DRIVE',
       // TRAFFIC_AWARE_OPTIMAL is the most accurate traffic model but the API
       // rejects it together with waypoint optimization.
@@ -408,10 +423,11 @@ class OsrmDirectionsService implements DirectionsService {
     required List<GeoPoint> destinations,
     DateTime? departureTime,
     List<Duration> dwellTimes = const [],
+    bool optimizeOrder = true,
   }) async {
     if (destinations.isEmpty) return RoutePlan.empty;
-    final order = destinations.length == 1
-        ? [0]
+    final order = !optimizeOrder || destinations.length == 1
+        ? [for (var i = 0; i < destinations.length; i++) i]
         : solveVisitingOrder(
             destinations.length,
             await _travelTimeMatrix([origin, ...destinations]),

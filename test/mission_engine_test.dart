@@ -36,6 +36,7 @@ class FlakyDirectionsService implements DirectionsService {
     required List<GeoPoint> destinations,
     DateTime? departureTime,
     List<Duration> dwellTimes = const [],
+    bool optimizeOrder = true,
   }) async {
     calls++;
     if (failures > 0) {
@@ -47,6 +48,7 @@ class FlakyDirectionsService implements DirectionsService {
       destinations: destinations,
       departureTime: departureTime,
       dwellTimes: dwellTimes,
+      optimizeOrder: optimizeOrder,
     );
   }
 }
@@ -62,6 +64,7 @@ class CountingDirectionsService implements DirectionsService {
     required List<GeoPoint> destinations,
     DateTime? departureTime,
     List<Duration> dwellTimes = const [],
+    bool optimizeOrder = true,
   }) {
     calls++;
     return _delegate.optimizedRoute(
@@ -69,6 +72,7 @@ class CountingDirectionsService implements DirectionsService {
       destinations: destinations,
       departureTime: departureTime,
       dwellTimes: dwellTimes,
+      optimizeOrder: optimizeOrder,
     );
   }
 }
@@ -118,7 +122,10 @@ void main() {
   MissionPoint stop(String id, String label, GeoPoint location) =>
       MissionPoint(id: id, label: label, location: location);
 
-  Future<MissionEngine> buildEngine(List<MissionPoint> destinations) async {
+  Future<MissionEngine> buildEngine(
+    List<MissionPoint> destinations, {
+    bool optimizeOrder = true,
+  }) async {
     clock = ManualClock(DateTime(2026, 1, 1, 8));
     location = FakeLocationService();
     engine = MissionEngine(
@@ -128,6 +135,7 @@ void main() {
       locationService: location,
       clock: clock,
       refreshInterval: const Duration(hours: 1),
+      optimizeOrder: optimizeOrder,
     );
     await engine.initialize();
     return engine;
@@ -148,6 +156,25 @@ void main() {
     expect(engine.routeOrder.map((p) => p.id).toSet(), {'b', 'c', 'd'});
     expect(engine.plan.legs, hasLength(3));
     expect(engine.status, MissionStatus.planning);
+  });
+
+  test('keeps the customer priority order and queues a new stop last', () async {
+    await buildEngine(
+      [stop('b', 'Point B', pointB), stop('c', 'Point C', pointC)],
+      optimizeOrder: false,
+    );
+    // Point D is nearest to the start, so an optimizer would pull it forward.
+    await engine.addDestination(stop('d', 'Point D', pointD));
+
+    expect(engine.routeOrder.map((p) => p.id), ['b', 'c', 'd']);
+    expect(engine.plan.legs.last.destination, pointD);
+
+    await engine.moveDestination('d', -1);
+    expect(engine.routeOrder.map((p) => p.id), ['b', 'd', 'c']);
+
+    await engine.setOptimizeOrder(true);
+    expect(engine.routeOrder.map((p) => p.id), isNot(['b', 'd', 'c']),
+        reason: 'the optimizer takes over once it is switched on');
   });
 
   test('ETAs stack the 15 minute on-site allowance of every preceding stop', () async {

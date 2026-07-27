@@ -16,9 +16,9 @@ tests run without network access.
 
 | Requirement | Where |
 | --- | --- |
-| Point A is the start; the route through the remaining points is optimized | `DirectionsService.optimizedRoute` (`optimizeWaypointOrder` on the Routes API, nearest-neighbour + 2-opt in the mock) |
+| Point A is the start; the remaining points are served in customer priority order, or optimized on request | `DirectionsService.optimizedRoute(optimizeOrder: ...)` (`optimizeWaypointOrder` on the Routes API, `/table` + 2-opt on OSRM) |
 | Live tracking of the operator | `LocationService` position stream, projected onto the planned polyline |
-| Points after A can be added / moved / removed by a Mission Operator | `MissionEngine.addDestination` / `updateDestination` / `removeDestination` → immediate re-optimization of the remaining stops |
+| Points after A can be added / re-prioritized / removed by a Mission Operator | `MissionEngine.addDestination` / `updateDestination` / `moveDestination` / `removeDestination` → immediate re-plan of the remaining stops |
 | 15 minutes of on-site tasks per destination | `MissionPoint.dwellTime` (`defaultDwellTime`), started by the arrival geofence, editable per stop |
 | Live, traffic-aware mission completion ETA | `MissionEngine.etas` / `missionCompletionEta`, recomputed on every position fix and tick |
 
@@ -43,6 +43,15 @@ Without a key the app routes on **OSRM** and searches places on **OpenStreetMap*
 runs an accelerated mission clock (`ScaledClock`, default 60x, switchable in the app bar) so a
 15 minute dwell plays out in 15 seconds. The **Operator** tab is the driver's live view; the
 **Mission Control** tab edits the destinations — search for a place or tap the map to drop one.
+
+## Visiting order
+
+Stops are driven in the order the mission operator lists them — customer priority — so a
+destination added mid-mission queues last. The arrows on each stop in Mission Control move it up
+or down that queue; a stop already being served keeps its place. **Optimize visiting order** in
+Mission Control hands the ordering to the router instead (`MissionEngine.optimizeOrder`), which
+re-orders the pending stops for the fastest route and keeps doing so on the re-optimization
+interval.
 
 ## Routing backends
 

@@ -8,8 +8,8 @@ import '../services/mission_engine.dart';
 import '../services/places_service.dart';
 import 'formatting.dart';
 
-/// Mission operator tools: add, move, retime or drop any destination after
-/// Point A. Every edit re-optimizes the remaining route immediately.
+/// Mission operator tools: add, re-prioritize, retime or drop any destination
+/// after Point A. Every edit re-plans the remaining route immediately.
 class MissionControlPanel extends StatelessWidget {
   const MissionControlPanel({super.key, required this.engine, required this.places});
 
@@ -24,11 +24,22 @@ class MissionControlPanel extends StatelessWidget {
       children: [
         Card(
           color: theme.colorScheme.secondaryContainer,
-          child: const Padding(
-            padding: EdgeInsets.all(12),
-            child: Text('Search for a place or tap the map to drop a destination. '
-                'Point A is fixed; the visiting order for the rest is optimized automatically.'),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text(engine.optimizeOrder
+                ? 'Search for a place or tap the map to drop a destination. Point A is fixed; '
+                    'the rest are re-ordered for the fastest route.'
+                : 'Search for a place or tap the map to drop a destination. Point A is fixed; '
+                    'the rest are served in this order, so a new customer queues last.'),
           ),
+        ),
+        SwitchListTile(
+          title: const Text('Optimize visiting order'),
+          subtitle: Text(engine.optimizeOrder
+              ? 'Stops are re-ordered for the shortest drive'
+              : 'Stops keep their customer priority order'),
+          value: engine.optimizeOrder,
+          onChanged: (value) => engine.setOptimizeOrder(value),
         ),
         const SizedBox(height: 12),
         ListTile(
@@ -72,6 +83,18 @@ class _DestinationTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (!engine.optimizeOrder) ...[
+            IconButton(
+              tooltip: 'Higher priority',
+              icon: const Icon(Icons.arrow_upward),
+              onPressed: locked ? null : () => engine.moveDestination(point.id, -1),
+            ),
+            IconButton(
+              tooltip: 'Lower priority',
+              icon: const Icon(Icons.arrow_downward),
+              onPressed: locked ? null : () => engine.moveDestination(point.id, 1),
+            ),
+          ],
           IconButton(
             tooltip: locked ? 'Stop is in progress or done' : 'Edit',
             icon: const Icon(Icons.edit),

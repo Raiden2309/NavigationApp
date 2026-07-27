@@ -152,16 +152,12 @@ class _RoutePainter extends CustomPainter {
     _paintPath(canvas, driven, theme.colorScheme.primary.withValues(alpha: 0.22), 6);
     _paintPath(canvas, ahead, theme.colorScheme.primary.withValues(alpha: 0.85), 6);
 
-    _paintStop(canvas, startingPoint, 'A', theme.colorScheme.tertiary, null);
+    // Point A greys out once the operator has left it, like the road behind
+    // them and any stop already served.
+    _paintStop(canvas, startingPoint, 'A', _colorFor(startingPoint), null);
     for (final stop in stops) {
       final sequence = routeOrder.indexOf(stop);
-      final color = switch (stop.status) {
-        MissionPointStatus.completed => Colors.grey,
-        MissionPointStatus.onSite => Colors.orange,
-        MissionPointStatus.enRoute => theme.colorScheme.primary,
-        MissionPointStatus.pending => theme.colorScheme.secondary,
-      };
-      _paintStop(canvas, stop, stop.label.characters.first.toUpperCase(), color,
+      _paintStop(canvas, stop, stop.label.characters.first.toUpperCase(), _colorFor(stop),
           sequence >= 0 ? sequence + 1 : null);
     }
 
@@ -180,6 +176,14 @@ class _RoutePainter extends CustomPainter {
       );
     }
   }
+
+  Color _colorFor(MissionPoint point) => switch (point.status) {
+        MissionPointStatus.completed => Colors.grey,
+        MissionPointStatus.onSite => Colors.orange,
+        MissionPointStatus.enRoute => theme.colorScheme.primary,
+        MissionPointStatus.pending =>
+          point == startingPoint ? theme.colorScheme.tertiary : theme.colorScheme.secondary,
+      };
 
   void _paintBackdrop(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFEFF3F1));
@@ -224,7 +228,8 @@ class _RoutePainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2,
     );
-    _paintText(canvas, glyph, center, const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold));
+    _paintText(canvas, glyph, center,
+        const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold));
     if (sequence != null) {
       final badge = center + const Offset(14, -14);
       canvas.drawCircle(badge, 9, Paint()..color = Colors.black87);
@@ -235,7 +240,11 @@ class _RoutePainter extends CustomPainter {
       canvas,
       stop.label,
       center + const Offset(0, 26),
-      TextStyle(color: Colors.black.withValues(alpha: 0.7), fontSize: 11, fontWeight: FontWeight.w600),
+      TextStyle(
+        color: Colors.black.withValues(alpha: stop.isCompleted ? 0.35 : 0.7),
+        fontSize: 11,
+        fontWeight: FontWeight.w600,
+      ),
     );
   }
 
