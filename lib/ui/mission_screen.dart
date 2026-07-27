@@ -17,13 +17,17 @@ class MissionScreen extends StatefulWidget {
     super.key,
     required this.engine,
     required this.places,
+    this.dataSource = 'Mock data',
     this.liveApis = false,
   });
 
   final MissionEngine engine;
   final PlacesService places;
 
-  /// Whether the real Google APIs are in use rather than the offline mocks.
+  /// Where roads and places come from, e.g. `Google APIs` or `OSRM + OSM`.
+  final String dataSource;
+
+  /// Whether real network services are in use rather than the offline mocks.
   final bool liveApis;
 
   @override
@@ -56,7 +60,7 @@ class _MissionScreenState extends State<MissionScreen> with SingleTickerProvider
             actions: [
               Chip(
                 avatar: Icon(widget.liveApis ? Icons.cloud_done : Icons.cloud_off, size: 18),
-                label: Text(widget.liveApis ? 'Google APIs' : 'Mock data'),
+                label: Text(widget.dataSource),
               ),
               const SizedBox(width: 12),
               _StatusChip(status: engine.status),

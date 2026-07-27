@@ -25,13 +25,14 @@ const String routingBackend = String.fromEnvironment('ROUTING_BACKEND');
 
 bool get useGoogleApis => googleMapsApiKey.isNotEmpty;
 
+String get activeBackend => routingBackend.isNotEmpty
+    ? routingBackend
+    : useGoogleApis
+        ? 'google'
+        : 'osrm';
+
 DirectionsService buildDirectionsService() {
-  final backend = routingBackend.isNotEmpty
-      ? routingBackend
-      : useGoogleApis
-          ? 'google'
-          : 'osrm';
-  return switch (backend) {
+  return switch (activeBackend) {
     'google' => GoogleDirectionsService(apiKey: googleMapsApiKey),
     'osrm' => OsrmDirectionsService(),
     _ => MockDirectionsService(),
@@ -87,7 +88,7 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
     // Google.
     _places = useGoogleApis
         ? GooglePlacesService(apiKey: googleMapsApiKey)
-        : routingBackend == 'mock'
+        : activeBackend == 'mock'
             ? const MockPlacesService()
             : NominatimPlacesService();
     _engine = MissionEngine(
@@ -125,7 +126,16 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1B6E4B)),
         useMaterial3: true,
       ),
-      home: MissionScreen(engine: _engine, places: _places, liveApis: useGoogleApis),
+      home: MissionScreen(
+        engine: _engine,
+        places: _places,
+        dataSource: switch (activeBackend) {
+          'google' => 'Google APIs',
+          'osrm' => 'OSRM + OSM',
+          _ => 'Mock data',
+        },
+        liveApis: activeBackend != 'mock',
+      ),
     );
   }
 }
