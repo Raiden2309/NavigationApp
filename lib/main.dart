@@ -74,6 +74,11 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
           : MockDirectionsService(),
       locationService: _location,
       clock: _clock,
+      // Measured on the mission clock, so the sped-up demo re-checks traffic
+      // every 20 seconds of real time rather than every 20 minutes.
+      reoptimizeInterval: useDeviceLocation
+          ? const Duration(minutes: 5)
+          : const Duration(minutes: 20),
     );
     _engine.initialize();
   }

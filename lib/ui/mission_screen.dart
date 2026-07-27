@@ -72,6 +72,7 @@ class _MissionScreenState extends State<MissionScreen> with SingleTickerProvider
                 stops: engine.destinations,
                 routeOrder: engine.routeOrder,
                 polyline: engine.plan.fullPolyline,
+                travelledMeters: engine.travelledDistanceMeters,
                 operatorPosition: engine.operatorPosition,
                 onMapTap: _editing ? _addPointAt : null,
               );

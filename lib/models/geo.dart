@@ -91,6 +91,23 @@ double distanceAlongPath(List<GeoPoint> path, GeoPoint point) {
   return bestTravelled;
 }
 
+/// Splits [path] at [meters] from its start, so the two halves can be drawn
+/// differently. Both halves share the split point, keeping the line unbroken.
+(List<GeoPoint>, List<GeoPoint>) splitPath(List<GeoPoint> path, double meters) {
+  if (path.length < 2 || meters <= 0) return (const [], path);
+  var remaining = meters;
+  for (var i = 1; i < path.length; i++) {
+    final segmentLength = path[i - 1].distanceTo(path[i]);
+    if (remaining <= segmentLength) {
+      final t = segmentLength == 0 ? 0.0 : remaining / segmentLength;
+      final split = path[i - 1].lerp(path[i], t);
+      return ([...path.take(i), split], [split, ...path.skip(i)]);
+    }
+    remaining -= segmentLength;
+  }
+  return (path, const []);
+}
+
 /// Returns the position [meters] along [path] from its start.
 GeoPoint pointAlongPath(List<GeoPoint> path, double meters) {
   if (path.isEmpty) throw ArgumentError('path must not be empty');

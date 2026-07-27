@@ -40,6 +40,7 @@ class MissionEngine extends ChangeNotifier {
     this.arrivalRadiusMeters = 40,
     this.refreshInterval = const Duration(milliseconds: 500),
     this.planRetryInterval = const Duration(seconds: 10),
+    this.reoptimizeInterval = const Duration(minutes: 5),
   })  : _destinations = List.of(destinations),
         _directions = directionsService,
         _location = locationService,
@@ -56,6 +57,10 @@ class MissionEngine extends ChangeNotifier {
   /// route because the last routing request failed.
   final Duration planRetryInterval;
 
+  /// How often a running mission re-quotes the remaining route against current
+  /// traffic, re-ordering the stops still to come when that is quicker.
+  final Duration reoptimizeInterval;
+
   final List<MissionPoint> _destinations;
   StreamSubscription<OperatorPosition>? _subscription;
   Timer? _ticker;
@@ -68,6 +73,10 @@ class MissionEngine extends ChangeNotifier {
   Object? _lastError;
   bool _planFailed = false;
   DateTime? _lastPlanAttempt;
+  Future<void> _planQueue = Future<void>.value();
+  DateTime? _lastReoptimizedAt;
+  bool _lastReoptimizeChangedOrder = false;
+  Duration _lastReoptimizeSaving = Duration.zero;
 
   /// Every destination after the starting point, in the order the mission
   /// operator entered them.
@@ -81,6 +90,16 @@ class MissionEngine extends ChangeNotifier {
   MissionStatus get status => _status;
 
   Object? get lastError => _lastError;
+
+  /// When the remaining route was last re-quoted against live traffic.
+  DateTime? get lastReoptimizedAt => _lastReoptimizedAt;
+
+  /// Whether that re-quote changed the visiting order.
+  bool get lastReoptimizeChangedOrder => _lastReoptimizeChangedOrder;
+
+  /// How much the last re-quote took off the completion ETA; negative when
+  /// traffic has got worse since the previous plan.
+  Duration get lastReoptimizeSaving => _lastReoptimizeSaving;
 
   GeoPoint? get operatorPosition => _operatorPosition;
 
@@ -106,6 +125,7 @@ class MissionEngine extends ChangeNotifier {
   Future<void> start() async {
     if (_routeOrder.isEmpty) return;
     _status = MissionStatus.enRoute;
+    _lastReoptimizedAt = clock.now();
     startingPoint.status = MissionPointStatus.completed;
     startingPoint.completedAt ??= clock.now();
     _routeOrder.first.status = MissionPointStatus.enRoute;
@@ -226,6 +246,7 @@ class MissionEngine extends ChangeNotifier {
 
   void _refresh() {
     _retryPlanning();
+    _reoptimizeIfDue();
     if (!isRunning) {
       notifyListeners();
       return;
@@ -233,7 +254,12 @@ class MissionEngine extends ChangeNotifier {
     final stop = currentStop;
     final position = _operatorPosition;
     if (stop != null && position != null && _status == MissionStatus.enRoute) {
-      if (position.distanceTo(stop.location) <= arrivalRadiusMeters) {
+      // A fast simulated tick, or a GPS fix that lands after the stop, can skip
+      // straight over the geofence, so progress along the leg counts as an
+      // arrival too.
+      final leg = _currentLegIndex;
+      if (position.distanceTo(stop.location) <= arrivalRadiusMeters ||
+          (leg >= 0 && _remainingDistanceToLeg(leg) <= arrivalRadiusMeters)) {
         _arriveAt(stop);
       }
     }
@@ -261,6 +287,31 @@ class MissionEngine extends ChangeNotifier {
     unawaited(_replan().then((_) => notifyListeners()));
   }
 
+  /// Traffic moves while the operator drives, so a running mission keeps
+  /// re-quoting the stops still ahead and re-orders them when that is faster.
+  void _reoptimizeIfDue() {
+    if (!isRunning || _replanning || _routeOrder.isEmpty) return;
+    if (reoptimizeInterval <= Duration.zero) return;
+    final last = _lastReoptimizedAt;
+    final now = clock.now();
+    if (last != null && now.difference(last) < reoptimizeInterval) return;
+    _lastReoptimizedAt = now;
+    unawaited(_reoptimize());
+  }
+
+  Future<void> _reoptimize() async {
+    final previousOrder = [for (final point in _routeOrder) point.id];
+    final previousEta = missionCompletionEta;
+    await _replan();
+    _lastReoptimizedAt = clock.now();
+    _lastReoptimizeChangedOrder =
+        !listEquals(previousOrder, [for (final point in _routeOrder) point.id]);
+    final eta = missionCompletionEta;
+    _lastReoptimizeSaving =
+        previousEta == null || eta == null ? Duration.zero : previousEta.difference(eta);
+    notifyListeners();
+  }
+
   void _arriveAt(MissionPoint stop) {
     stop.status = MissionPointStatus.onSite;
     stop.arrivedAt = clock.now();
@@ -283,8 +334,17 @@ class MissionEngine extends ChangeNotifier {
 
   /// Recomputes the optimal route through every stop that is still pending,
   /// starting from wherever the operator currently is.
-  Future<void> _replan() async {
-    if (_replanning) return;
+  ///
+  /// Re-plans are queued rather than dropped: a background re-optimization
+  /// must not swallow the re-plan that follows an edit or a completed stop,
+  /// nor land on top of it and undo the new state.
+  Future<void> _replan() {
+    final run = _planQueue.then((_) => _planOnce());
+    _planQueue = run.catchError((Object _) {});
+    return run;
+  }
+
+  Future<void> _planOnce() async {
     _replanning = true;
     try {
       final pending = _destinations.where((p) => !p.isCompleted).toList();
@@ -365,11 +425,17 @@ class MissionEngine extends ChangeNotifier {
     _legEndDistances = ends;
   }
 
+  /// Progress along the whole route. Only the leg in progress is projected
+  /// onto: matching against the full route would snap the operator onto a
+  /// later leg wherever the route drives down the same road twice.
   double _travelledOnPlan() {
+    final index = _currentLegIndex;
+    if (index < 0) return 0;
+    final before = index == 0 ? 0.0 : _legEndDistances[index - 1];
     final position = _operatorPosition;
-    final path = _plan.fullPolyline;
-    if (position == null || path.length < 2) return 0;
-    return distanceAlongPath(path, position);
+    final path = _plan.legs[index].polyline;
+    if (position == null || path.length < 2) return before;
+    return before + distanceAlongPath(path, position);
   }
 
   double _remainingDistanceToLeg(int legIndex) {
@@ -400,10 +466,26 @@ class MissionEngine extends ChangeNotifier {
     return total;
   }
 
+  /// The leg the operator is driving now: the first one with a real distance,
+  /// skipping the zero-length leg that anchors a stop being served.
+  int get _currentLegIndex {
+    for (var i = 0; i < _plan.legs.length; i++) {
+      if (_plan.legs[i].distanceMeters > 0) return i;
+    }
+    return _plan.legs.isEmpty ? -1 : 0;
+  }
+
+  /// Part of the route the operator has already driven, in meters.
+  double get travelledDistanceMeters => _travelledOnPlan();
+
+  /// The simulator only ever follows the leg in progress, so it parks at the
+  /// next stop instead of driving through it towards the end of the route.
   void _followPlan() {
     final simulator = _location;
     if (simulator is! SimulatedLocationService) return;
-    final path = _plan.fullPolyline;
+    final index = _currentLegIndex;
+    if (index < 0) return;
+    final path = _plan.legs[index].polyline;
     if (path.length >= 2) simulator.followPath(path);
   }
 

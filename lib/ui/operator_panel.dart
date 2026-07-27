@@ -29,6 +29,9 @@ class OperatorPanel extends StatelessWidget {
           driveTime: engine.remainingDriveTime,
           trafficDelay: engine.remainingTrafficDelay,
           routeMissing: engine.routeOrder.isEmpty && engine.lastError != null,
+          reoptimizedAt: engine.status == MissionStatus.planning ? null : engine.lastReoptimizedAt,
+          reorderedStops: engine.lastReoptimizeChangedOrder,
+          reoptimizeSaving: engine.lastReoptimizeSaving,
         ),
         const SizedBox(height: 12),
         if (current != null) _NextStopCard(engine: engine, eta: current, now: now),
@@ -64,6 +67,9 @@ class _MissionSummary extends StatelessWidget {
     required this.driveTime,
     required this.trafficDelay,
     required this.routeMissing,
+    required this.reoptimizedAt,
+    required this.reorderedStops,
+    required this.reoptimizeSaving,
   });
 
   final DateTime? completion;
@@ -75,6 +81,11 @@ class _MissionSummary extends StatelessWidget {
 
   /// The last routing request failed, so there is no plan to show yet.
   final bool routeMissing;
+
+  /// When the remaining route was last re-quoted against live traffic.
+  final DateTime? reoptimizedAt;
+  final bool reorderedStops;
+  final Duration reoptimizeSaving;
 
   @override
   Widget build(BuildContext context) {
@@ -110,10 +121,26 @@ class _MissionSummary extends StatelessWidget {
                   Expanded(child: Text('${formatDuration(trafficDelay)} of that is traffic')),
                 ],
               ),
+            if (reoptimizedAt != null)
+              Row(
+                children: [
+                  const Icon(Icons.autorenew, size: 16),
+                  const SizedBox(width: 4),
+                  Expanded(child: Text(_reoptimizeLabel(reoptimizedAt!))),
+                ],
+              ),
           ],
         ),
       ),
     );
+  }
+
+  String _reoptimizeLabel(DateTime at) {
+    final checked = 'Traffic re-checked ${formatClockTime(at)}';
+    if (reorderedStops) return '$checked · stops re-ordered';
+    if (reoptimizeSaving.abs() < const Duration(minutes: 1)) return '$checked · route unchanged';
+    final minutes = reoptimizeSaving.inMinutes;
+    return minutes > 0 ? '$checked · ETA ${minutes}m earlier' : '$checked · ETA ${-minutes}m later';
   }
 }
 

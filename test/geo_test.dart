@@ -24,4 +24,16 @@ void main() {
     final travelled = distanceAlongPath(path, const GeoPoint(1.0005, 103.01));
     expect(travelled, closeTo(total / 2, total * 0.02));
   });
+
+  test('splitPath cuts the polyline into a driven and a remaining half', () {
+    const path = [GeoPoint(1.0, 103.0), GeoPoint(1.0, 103.01), GeoPoint(1.0, 103.02)];
+    final total = polylineLength(path);
+    final (driven, ahead) = splitPath(path, total / 2);
+
+    expect(driven.last, ahead.first, reason: 'the halves must stay joined');
+    expect(driven.last.longitude, closeTo(103.01, 0.0005));
+    expect(polylineLength(driven) + polylineLength(ahead), closeTo(total, 1));
+    expect(splitPath(path, 0).$1, isEmpty);
+    expect(splitPath(path, total * 2).$2, isEmpty);
+  });
 }

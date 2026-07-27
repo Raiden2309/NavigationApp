@@ -51,6 +51,28 @@ class FlakyDirectionsService implements DirectionsService {
   }
 }
 
+/// Counts how many times the route was requested.
+class CountingDirectionsService implements DirectionsService {
+  int calls = 0;
+  final DirectionsService _delegate = MockDirectionsService();
+
+  @override
+  Future<RoutePlan> optimizedRoute({
+    required GeoPoint origin,
+    required List<GeoPoint> destinations,
+    DateTime? departureTime,
+    List<Duration> dwellTimes = const [],
+  }) {
+    calls++;
+    return _delegate.optimizedRoute(
+      origin: origin,
+      destinations: destinations,
+      departureTime: departureTime,
+      dwellTimes: dwellTimes,
+    );
+  }
+}
+
 class FakeLocationService implements LocationService {
   final StreamController<OperatorPosition> _controller =
       StreamController<OperatorPosition>.broadcast();
@@ -239,6 +261,52 @@ void main() {
     expect(directions.calls, greaterThan(1));
     expect(engine.routeOrder, hasLength(1));
     expect(engine.lastError, isNull);
+  });
+
+  test('re-optimizes the remaining route on its own while driving', () async {
+    clock = ManualClock(DateTime(2026, 1, 1, 8));
+    location = FakeLocationService();
+    final directions = CountingDirectionsService();
+    engine = MissionEngine(
+      startingPoint: stop('a', 'Point A', start),
+      destinations: [stop('b', 'Point B', pointB), stop('c', 'Point C', pointC)],
+      directionsService: directions,
+      locationService: location,
+      clock: clock,
+      refreshInterval: const Duration(milliseconds: 10),
+      reoptimizeInterval: const Duration(minutes: 10),
+    );
+    await engine.initialize();
+    await engine.start();
+    final planned = directions.calls;
+
+    // Not yet due: the mission clock has barely moved.
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(directions.calls, planned);
+    expect(engine.lastReoptimizedAt, clock.now());
+
+    clock.advance(const Duration(minutes: 11));
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+
+    expect(directions.calls, greaterThan(planned));
+    expect(engine.lastReoptimizedAt, clock.now());
+    expect(engine.routeOrder, hasLength(2));
+  });
+
+  test('a position past the stop still counts as an arrival', () async {
+    await buildEngine([stop('b', 'Point B', pointB), stop('c', 'Point C', pointC)]);
+    await engine.start();
+    final first = engine.currentStop!;
+
+    // A coarse GPS fix (or a fast simulated tick) lands well beyond the stop
+    // instead of inside its 40 m geofence.
+    await location.emit(
+      GeoPoint(first.location.latitude + 0.01, first.location.longitude + 0.01),
+      clock.now(),
+    );
+
+    expect(engine.status, MissionStatus.onSite);
+    expect(first.status, MissionPointStatus.onSite);
   });
 
   test('the mission finishes once the last stop is served', () async {

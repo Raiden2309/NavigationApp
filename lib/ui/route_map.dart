@@ -73,6 +73,7 @@ class RouteMap extends StatelessWidget {
     required this.stops,
     required this.routeOrder,
     required this.polyline,
+    this.travelledMeters = 0,
     this.operatorPosition,
     this.onMapTap,
   });
@@ -81,6 +82,10 @@ class RouteMap extends StatelessWidget {
   final List<MissionPoint> stops;
   final List<MissionPoint> routeOrder;
   final List<GeoPoint> polyline;
+
+  /// How far along [polyline] the operator has driven; that part is drawn as a
+  /// faded trail so the road still ahead stands out.
+  final double travelledMeters;
   final GeoPoint? operatorPosition;
   final ValueChanged<GeoPoint>? onMapTap;
 
@@ -108,6 +113,7 @@ class RouteMap extends StatelessWidget {
               stops: stops,
               routeOrder: routeOrder,
               polyline: polyline,
+              travelledMeters: travelledMeters,
               operatorPosition: operatorPosition,
               theme: Theme.of(context),
             ),
@@ -125,6 +131,7 @@ class _RoutePainter extends CustomPainter {
     required this.stops,
     required this.routeOrder,
     required this.polyline,
+    required this.travelledMeters,
     required this.operatorPosition,
     required this.theme,
   });
@@ -134,13 +141,16 @@ class _RoutePainter extends CustomPainter {
   final List<MissionPoint> stops;
   final List<MissionPoint> routeOrder;
   final List<GeoPoint> polyline;
+  final double travelledMeters;
   final GeoPoint? operatorPosition;
   final ThemeData theme;
 
   @override
   void paint(Canvas canvas, Size size) {
     _paintBackdrop(canvas, size);
-    _paintPath(canvas, polyline, theme.colorScheme.primary.withValues(alpha: 0.85), 6);
+    final (driven, ahead) = splitPath(polyline, travelledMeters);
+    _paintPath(canvas, driven, theme.colorScheme.primary.withValues(alpha: 0.22), 6);
+    _paintPath(canvas, ahead, theme.colorScheme.primary.withValues(alpha: 0.85), 6);
 
     _paintStop(canvas, startingPoint, 'A', theme.colorScheme.tertiary, null);
     for (final stop in stops) {
