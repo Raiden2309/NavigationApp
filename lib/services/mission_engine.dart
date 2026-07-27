@@ -77,6 +77,7 @@ class MissionEngine extends ChangeNotifier {
   DateTime? _lastReoptimizedAt;
   bool _lastReoptimizeChangedOrder = false;
   Duration _lastReoptimizeSaving = Duration.zero;
+  int _reoptimizeBackoff = 1;
 
   /// Every destination after the starting point, in the order the mission
   /// operator entered them.
@@ -294,7 +295,7 @@ class MissionEngine extends ChangeNotifier {
     if (reoptimizeInterval <= Duration.zero) return;
     final last = _lastReoptimizedAt;
     final now = clock.now();
-    if (last != null && now.difference(last) < reoptimizeInterval) return;
+    if (last != null && now.difference(last) < reoptimizeInterval * _reoptimizeBackoff) return;
     _lastReoptimizedAt = now;
     unawaited(_reoptimize());
   }
@@ -303,6 +304,9 @@ class MissionEngine extends ChangeNotifier {
     final previousOrder = [for (final point in _routeOrder) point.id];
     final previousEta = missionCompletionEta;
     await _replan();
+    // Routing quota is finite, so a failing loop slows itself down instead of
+    // hammering the API every interval.
+    _reoptimizeBackoff = _planFailed ? math.min(_reoptimizeBackoff * 2, 16) : 1;
     _lastReoptimizedAt = clock.now();
     _lastReoptimizeChangedOrder =
         !listEquals(previousOrder, [for (final point in _routeOrder) point.id]);
@@ -371,9 +375,18 @@ class MissionEngine extends ChangeNotifier {
         departureTime: departure,
         dwellTimes: [for (final p in optimizable) p.dwellTime],
       );
+      // A waypoint order that is short, or holds an index the route no longer
+      // has, must not drop a stop or blow up the mission: unplaced stops keep
+      // their entered order at the back.
+      final placed = [
+        for (final index in plan.waypointOrder)
+          if (index >= 0 && index < optimizable.length) optimizable[index],
+      ];
       final ordered = [
         ?anchored,
-        for (final index in plan.waypointOrder) optimizable[index],
+        ...placed,
+        for (final point in optimizable)
+          if (!placed.contains(point)) point,
       ];
 
       if (anchored != null) {
