@@ -56,6 +56,20 @@ class MissionPoint {
       );
 }
 
+class MissionStop {
+  final String id;
+  final double latitude;
+  final double longitude;
+  final int priority;
+
+  MissionStop({
+    required this.id,
+    required this.latitude,
+    required this.longitude,
+    required this.priority,
+  });
+}
+
 /// One optimized leg between two consecutive stops.
 class RouteLeg {
   const RouteLeg({

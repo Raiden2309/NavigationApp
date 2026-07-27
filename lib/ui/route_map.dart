@@ -1,71 +1,11 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
 
 import '../models/geo.dart';
 import '../models/mission.dart';
 
-/// Maps geographic coordinates onto the canvas with an equirectangular
-/// projection fitted to the mission bounds.
-class MapProjection {
-  MapProjection({required this.bounds, required this.size, this.padding = 36});
-
-  final ({double minLat, double maxLat, double minLng, double maxLng}) bounds;
-  final Size size;
-  final double padding;
-
-  double get _cosLat =>
-      math.cos((bounds.minLat + bounds.maxLat) / 2 * math.pi / 180).abs().clamp(0.01, 1.0);
-
-  double get _scale {
-    final spanX = math.max((bounds.maxLng - bounds.minLng) * _cosLat, 1e-6);
-    final spanY = math.max(bounds.maxLat - bounds.minLat, 1e-6);
-    return math.min(
-      (size.width - padding * 2) / spanX,
-      (size.height - padding * 2) / spanY,
-    );
-  }
-
-  Offset toScreen(GeoPoint point) {
-    final centerLat = (bounds.minLat + bounds.maxLat) / 2;
-    final centerLng = (bounds.minLng + bounds.maxLng) / 2;
-    final dx = (point.longitude - centerLng) * _cosLat * _scale;
-    final dy = (point.latitude - centerLat) * _scale;
-    return Offset(size.width / 2 + dx, size.height / 2 - dy);
-  }
-
-  GeoPoint toGeo(Offset offset) {
-    final centerLat = (bounds.minLat + bounds.maxLat) / 2;
-    final centerLng = (bounds.minLng + bounds.maxLng) / 2;
-    final dx = offset.dx - size.width / 2;
-    final dy = size.height / 2 - offset.dy;
-    return GeoPoint(centerLat + dy / _scale, centerLng + dx / (_scale * _cosLat));
-  }
-}
-
-({double minLat, double maxLat, double minLng, double maxLng}) boundsOf(List<GeoPoint> points) {
-  var minLat = points.first.latitude;
-  var maxLat = points.first.latitude;
-  var minLng = points.first.longitude;
-  var maxLng = points.first.longitude;
-  for (final point in points) {
-    minLat = math.min(minLat, point.latitude);
-    maxLat = math.max(maxLat, point.latitude);
-    minLng = math.min(minLng, point.longitude);
-    maxLng = math.max(maxLng, point.longitude);
-  }
-  final latPad = math.max((maxLat - minLat) * 0.15, 0.002);
-  final lngPad = math.max((maxLng - minLng) * 0.15, 0.002);
-  return (
-    minLat: minLat - latPad,
-    maxLat: maxLat + latPad,
-    minLng: minLng - lngPad,
-    maxLng: maxLng + lngPad,
-  );
-}
-
-/// Lightweight stand-in for the Google Maps widget: it draws the optimized
-/// polyline, the stops and the live operator marker without needing an API key.
 class RouteMap extends StatelessWidget {
   const RouteMap({
     super.key,
@@ -73,7 +13,7 @@ class RouteMap extends StatelessWidget {
     required this.stops,
     required this.routeOrder,
     required this.polyline,
-    this.travelledMeters = 0,
+    required this.travelledMeters,
     this.operatorPosition,
     this.onMapTap,
   });
@@ -82,180 +22,218 @@ class RouteMap extends StatelessWidget {
   final List<MissionPoint> stops;
   final List<MissionPoint> routeOrder;
   final List<GeoPoint> polyline;
-
-  /// How far along [polyline] the operator has driven; that part is drawn as a
-  /// faded trail so the road still ahead stands out.
   final double travelledMeters;
   final GeoPoint? operatorPosition;
-  final ValueChanged<GeoPoint>? onMapTap;
+  final void Function(GeoPoint)? onMapTap;
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final size = Size(constraints.maxWidth, constraints.maxHeight);
-        final all = <GeoPoint>[
-          startingPoint.location,
-          for (final stop in stops) stop.location,
-          ...polyline,
-          ?operatorPosition,
-        ];
-        final projection = MapProjection(bounds: boundsOf(all), size: size);
-        return GestureDetector(
-          onTapUp: onMapTap == null
-              ? null
-              : (details) => onMapTap!(projection.toGeo(details.localPosition)),
-          child: CustomPaint(
-            size: size,
-            painter: _RoutePainter(
-              projection: projection,
-              startingPoint: startingPoint,
-              stops: stops,
-              routeOrder: routeOrder,
-              polyline: polyline,
-              travelledMeters: travelledMeters,
-              operatorPosition: operatorPosition,
-              theme: Theme.of(context),
+    final theme = Theme.of(context);
+
+    // Convert GeoPoints to LatLng for flutter_map
+    final allLatLongs = polyline
+        .map((p) => LatLng(p.latitude, p.longitude))
+        .toList();
+
+    // Split path into driven vs remaining segments
+    final (drivenPoints, aheadPoints) = splitPath(polyline, travelledMeters);
+    
+    final drivenLatLngs = drivenPoints
+        .map((p) => LatLng(p.latitude, p.longitude))
+        .toList();
+        
+    final aheadLatLngs = aheadPoints
+        .map((p) => LatLng(p.latitude, p.longitude))
+        .toList();
+
+    // Determine initial center
+    final initialCenter = allLatLongs.isNotEmpty
+        ? allLatLongs.first
+        : LatLng(startingPoint.location.latitude, startingPoint.location.longitude);
+
+    return FlutterMap(
+      options: MapOptions(
+        initialCenter: initialCenter,
+        initialZoom: 14.0,
+      ),
+      children: [
+        // 1. Base Map Tile Layer
+        TileLayer(
+          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          userAgentPackageName: 'com.example.mission_router',
+          tileProvider: CancellableNetworkTileProvider(),
+        ),
+
+        // 2. Polyline Layer (Driven & Remaining routes)
+        PolylineLayer(
+          polylines: [
+            if (drivenLatLngs.length >= 2)
+              Polyline(
+                points: drivenLatLngs,
+                color: theme.colorScheme.primary.withValues(alpha: 0.3),
+                strokeWidth: 6.0,
+              ),
+            if (aheadLatLngs.length >= 2)
+              Polyline(
+                points: aheadLatLngs,
+                color: theme.colorScheme.primary,
+                strokeWidth: 6.0,
+              ),
+          ],
+        ),
+
+        // 3. Markers Layer (Starting Point, Mission Stops, Operator)
+        MarkerLayer(
+          markers: [
+            // Starting Point Pin
+            _buildStopMarker(
+              point: startingPoint,
+              glyph: 'A',
+              color: _colorFor(startingPoint, theme),
+              sequence: null,
+            ),
+
+            // Mission Stop Pins
+            ...stops.map((stop) {
+              final sequence = routeOrder.indexOf(stop);
+              final glyph = stop.label.isNotEmpty
+                  ? stop.label.characters.first.toUpperCase()
+                  : '?';
+              return _buildStopMarker(
+                point: stop,
+                glyph: glyph,
+                color: _colorFor(stop, theme),
+                sequence: sequence >= 0 ? sequence + 1 : null,
+              );
+            }),
+
+            // Operator Marker
+            if (operatorPosition != null)
+              Marker(
+                point: LatLng(
+                  operatorPosition!.latitude,
+                  operatorPosition!.longitude,
+                ),
+                width: 32,
+                height: 32,
+                child: Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.blue.withValues(alpha: 0.25),
+                  ),
+                  child: Center(
+                    child: Container(
+                      width: 14,
+                      height: 14,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.blue,
+                        border: Border.all(color: Colors.white, width: 2.5),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Marker _buildStopMarker({
+    required MissionPoint point,
+    required String glyph,
+    required Color color,
+    required int? sequence,
+  }) {
+    final location = LatLng(point.location.latitude, point.location.longitude);
+
+    return Marker(
+      point: location,
+      width: 70,
+      height: 70,
+      child: Stack(
+        alignment: Alignment.center,
+        clipBehavior: Clip.none,
+        children: [
+          // Main Pin Circle
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: color,
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: const [
+                BoxShadow(
+                  color: Colors.black26,
+                  blurRadius: 4,
+                  offset: Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Center(
+              child: Text(
+                glyph,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ),
-        );
-      },
-    );
-  }
-}
 
-class _RoutePainter extends CustomPainter {
-  _RoutePainter({
-    required this.projection,
-    required this.startingPoint,
-    required this.stops,
-    required this.routeOrder,
-    required this.polyline,
-    required this.travelledMeters,
-    required this.operatorPosition,
-    required this.theme,
-  });
+          // Sequence Badge
+          if (sequence != null)
+            Positioned(
+              top: 10,
+              right: 12,
+              child: Container(
+                width: 18,
+                height: 18,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.black87,
+                ),
+                child: Center(
+                  child: Text(
+                    '$sequence',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
-  final MapProjection projection;
-  final MissionPoint startingPoint;
-  final List<MissionPoint> stops;
-  final List<MissionPoint> routeOrder;
-  final List<GeoPoint> polyline;
-  final double travelledMeters;
-  final GeoPoint? operatorPosition;
-  final ThemeData theme;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    _paintBackdrop(canvas, size);
-    final (driven, ahead) = splitPath(polyline, travelledMeters);
-    _paintPath(canvas, driven, theme.colorScheme.primary.withValues(alpha: 0.22), 6);
-    _paintPath(canvas, ahead, theme.colorScheme.primary.withValues(alpha: 0.85), 6);
-
-    // Point A greys out once the operator has left it, like the road behind
-    // them and any stop already served.
-    _paintStop(canvas, startingPoint, 'A', _colorFor(startingPoint), null);
-    for (final stop in stops) {
-      final sequence = routeOrder.indexOf(stop);
-      _paintStop(canvas, stop, stop.label.characters.first.toUpperCase(), _colorFor(stop),
-          sequence >= 0 ? sequence + 1 : null);
-    }
-
-    final operator = operatorPosition;
-    if (operator != null) {
-      final center = projection.toScreen(operator);
-      canvas.drawCircle(center, 14, Paint()..color = Colors.blue.withValues(alpha: 0.2));
-      canvas.drawCircle(center, 7, Paint()..color = Colors.blue);
-      canvas.drawCircle(
-        center,
-        7,
-        Paint()
-          ..color = Colors.white
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.5,
-      );
-    }
-  }
-
-  Color _colorFor(MissionPoint point) => switch (point.status) {
-        MissionPointStatus.completed => Colors.grey,
-        MissionPointStatus.onSite => Colors.orange,
-        MissionPointStatus.enRoute => theme.colorScheme.primary,
-        MissionPointStatus.pending =>
-          point == startingPoint ? theme.colorScheme.tertiary : theme.colorScheme.secondary,
-      };
-
-  void _paintBackdrop(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFFEFF3F1));
-    final grid = Paint()
-      ..color = const Color(0xFFDDE4E1)
-      ..strokeWidth = 1;
-    for (var x = 0.0; x < size.width; x += 48) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), grid);
-    }
-    for (var y = 0.0; y < size.height; y += 48) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
-    }
-  }
-
-  void _paintPath(Canvas canvas, List<GeoPoint> points, Color color, double width) {
-    if (points.length < 2) return;
-    final path = Path()..moveTo(
-        projection.toScreen(points.first).dx, projection.toScreen(points.first).dy);
-    for (final point in points.skip(1)) {
-      final offset = projection.toScreen(point);
-      path.lineTo(offset.dx, offset.dy);
-    }
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = width
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round,
-    );
-  }
-
-  void _paintStop(Canvas canvas, MissionPoint stop, String glyph, Color color, int? sequence) {
-    final center = projection.toScreen(stop.location);
-    canvas.drawCircle(center, 15, Paint()..color = color);
-    canvas.drawCircle(
-      center,
-      15,
-      Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2,
-    );
-    _paintText(canvas, glyph, center,
-        const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold));
-    if (sequence != null) {
-      final badge = center + const Offset(14, -14);
-      canvas.drawCircle(badge, 9, Paint()..color = Colors.black87);
-      _paintText(canvas, '$sequence', badge,
-          const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold));
-    }
-    _paintText(
-      canvas,
-      stop.label,
-      center + const Offset(0, 26),
-      TextStyle(
-        color: Colors.black.withValues(alpha: stop.isCompleted ? 0.35 : 0.7),
-        fontSize: 11,
-        fontWeight: FontWeight.w600,
+          // Label Text below pin
+          Positioned(
+            bottom: 2,
+            child: Text(
+              point.label,
+              style: TextStyle(
+                color: Colors.black.withValues(alpha: point.isCompleted ? 0.4 : 0.85),
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  void _paintText(Canvas canvas, String text, Offset center, TextStyle style) {
-    final painter = TextPainter(
-      text: TextSpan(text: text, style: style),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    painter.paint(canvas, center - Offset(painter.width / 2, painter.height / 2));
+  Color _colorFor(MissionPoint point, ThemeData theme) {
+    return switch (point.status) {
+      MissionPointStatus.completed => Colors.grey,
+      MissionPointStatus.onSite => Colors.orange,
+      MissionPointStatus.enRoute => theme.colorScheme.primary,
+      MissionPointStatus.pending =>
+        point == startingPoint ? theme.colorScheme.tertiary : theme.colorScheme.secondary,
+    };
   }
-
-  @override
-  bool shouldRepaint(covariant _RoutePainter oldDelegate) => true;
 }
