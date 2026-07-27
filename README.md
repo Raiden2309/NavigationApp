@@ -39,11 +39,35 @@ flutter run -d chrome        # or any device
 flutter test
 ```
 
-Without a key the app uses the offline mocks (synthetic roads, a gazetteer of real Singapore
-sites, a simulated operator) and an accelerated mission clock (`ScaledClock`, default 60x,
-switchable in the app bar) so a 15 minute dwell plays out in 15 seconds. The **Operator** tab is
-the driver's live view; the **Mission Control** tab edits the destinations — search for a place or
-tap the map to drop one.
+Without a key the app routes on **OSRM** and searches places on **OpenStreetMap** (see below), and
+runs an accelerated mission clock (`ScaledClock`, default 60x, switchable in the app bar) so a
+15 minute dwell plays out in 15 seconds. The **Operator** tab is the driver's live view; the
+**Mission Control** tab edits the destinations — search for a place or tap the map to drop one.
+
+## Routing backends
+
+`--dart-define=ROUTING_BACKEND=google|osrm|mock` picks the backend; the default is `google` when a
+key is set and `osrm` otherwise.
+
+| Backend | Roads and times | Traffic | Needs |
+| --- | --- | --- | --- |
+| `google` | Routes API | live + predicted, per leg | API key, quota |
+| `osrm` | real OSM roads via `router.project-osrm.org` | none from OSRM — `TrafficProfile` rush-hour model applied per leg | nothing |
+| `mock` | synthetic curved roads | `TrafficProfile` | nothing, works offline |
+
+```bash
+flutter run -d chrome --dart-define=ROUTING_BACKEND=osrm
+```
+
+OSRM is the no-key stand-in for Google: `OsrmDirectionsService` takes the visiting order from one
+`/table` travel-time matrix (nearest-neighbour + 2-opt — the demo server's `/trip` optimizes a
+*round* trip, which a delivery run is not) and the geometry from one `/route` request with
+`steps=true`, stitching each leg's steps into its polyline. Because OSRM has no traffic data its
+durations are free flow, so `duration` is the free-flow time scaled by `TrafficProfile` for the
+time that leg is predicted to be driven — the same rush-hour stacking as the Google backend, from
+a model rather than from Google. Place search falls back to Nominatim
+(`NominatimPlacesService`), which returns real names, addresses and coordinates with no key; its
+usage policy allows about one request a second, which the search box's debounce respects.
 
 ## Real Google APIs
 
@@ -88,7 +112,8 @@ GOOGLE_MAPS_API_KEY=... dart run tool/live_check.dart
 
 `GooglePlacesService` uses Places Autocomplete (New) for the search box, Place Details for the
 coordinates and address, and `places:searchNearby` to name a pin dropped on the map. Offline, the
-same interface is served by `MockPlacesService` over a list of real Singapore sites.
+same interface is served by `NominatimPlacesService` (OpenStreetMap) or, on the `mock` backend, by
+`MockPlacesService` over a list of real Singapore sites.
 
 ### Live tracking
 
@@ -107,7 +132,8 @@ operator marker. Replace it with `GoogleMap` from `google_maps_flutter`, feeding
 ```
 lib/
   models/       geo.dart (distance/projection maths), mission.dart (MissionPoint, RouteLeg, RoutePlan)
-  services/     directions_service.dart (mock + Routes API), places_service.dart (mock + Places API),
+  services/     directions_service.dart (mock + Routes API + OSRM), places_service.dart (mock +
+                Places API + Nominatim),
                 location_service.dart (simulated + geolocator), traffic_profile.dart (mock rush hour),
                 mission_clock.dart, mission_engine.dart (state, arrival, dwell, live ETAs)
   ui/           mission_screen.dart, operator_panel.dart, mission_control_panel.dart, route_map.dart

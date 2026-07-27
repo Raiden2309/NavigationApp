@@ -17,7 +17,26 @@ const String googleMapsApiKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
 /// simulated operator: `--dart-define=USE_DEVICE_LOCATION=true`.
 const bool useDeviceLocation = bool.fromEnvironment('USE_DEVICE_LOCATION');
 
+/// Which routing backend to use: `google`, `osrm` or `mock`. Defaults to
+/// Google when a key is configured and to OSRM otherwise — OSRM routes on real
+/// OpenStreetMap roads with no key and no quota, but has no traffic data, so
+/// rush hour comes from the app's own [TrafficProfile].
+const String routingBackend = String.fromEnvironment('ROUTING_BACKEND');
+
 bool get useGoogleApis => googleMapsApiKey.isNotEmpty;
+
+DirectionsService buildDirectionsService() {
+  final backend = routingBackend.isNotEmpty
+      ? routingBackend
+      : useGoogleApis
+          ? 'google'
+          : 'osrm';
+  return switch (backend) {
+    'google' => GoogleDirectionsService(apiKey: googleMapsApiKey),
+    'osrm' => OsrmDirectionsService(),
+    _ => MockDirectionsService(),
+  };
+}
 
 void main() {
   runApp(const MissionRouterApp());
@@ -63,15 +82,18 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
             initialPosition: _startingPoint.location,
             clock: _clock,
           );
+    // Without a Google key, places still come from OpenStreetMap rather than
+    // the built-in gazetteer, so any real address can be searched offline of
+    // Google.
     _places = useGoogleApis
         ? GooglePlacesService(apiKey: googleMapsApiKey)
-        : const MockPlacesService();
+        : routingBackend == 'mock'
+            ? const MockPlacesService()
+            : NominatimPlacesService();
     _engine = MissionEngine(
       startingPoint: _startingPoint,
       destinations: _destinations,
-      directionsService: useGoogleApis
-          ? GoogleDirectionsService(apiKey: googleMapsApiKey)
-          : MockDirectionsService(),
+      directionsService: buildDirectionsService(),
       locationService: _location,
       clock: _clock,
       // Measured on the mission clock, so the sped-up demo re-checks traffic

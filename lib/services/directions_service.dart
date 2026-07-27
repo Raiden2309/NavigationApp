@@ -120,61 +120,65 @@ class MockDirectionsService implements DirectionsService {
   }
 
   List<int> _solveOrder(GeoPoint origin, List<GeoPoint> destinations) {
-    final order = _nearestNeighbour(origin, destinations);
-    return _twoOpt(origin, destinations, order);
+    final points = [origin, ...destinations];
+    return solveVisitingOrder(
+      destinations.length,
+      (from, to) => points[from].distanceTo(points[to]),
+    );
   }
+}
 
-  List<int> _nearestNeighbour(GeoPoint origin, List<GeoPoint> destinations) {
-    final remaining = List<int>.generate(destinations.length, (i) => i);
-    final order = <int>[];
-    var current = origin;
-    while (remaining.isNotEmpty) {
-      var bestIndex = 0;
-      var bestDistance = double.infinity;
-      for (var i = 0; i < remaining.length; i++) {
-        final distance = current.distanceTo(destinations[remaining[i]]);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestIndex = i;
-        }
+/// Orders [destinationCount] stops so the total [cost] of the trip through all
+/// of them is as low as it can cheaply be made: a nearest-neighbour seed
+/// refined with 2-opt, the same approach as `optimizeWaypointOrder`.
+///
+/// Node `0` is the origin and nodes `1..n` are the destinations; the returned
+/// indices are zero-based into the destinations.
+List<int> solveVisitingOrder(int destinationCount, double Function(int from, int to) cost) {
+  final remaining = [for (var i = 1; i <= destinationCount; i++) i];
+  final order = <int>[];
+  var current = 0;
+  while (remaining.isNotEmpty) {
+    var bestIndex = 0;
+    var bestCost = double.infinity;
+    for (var i = 0; i < remaining.length; i++) {
+      final candidate = cost(current, remaining[i]);
+      if (candidate < bestCost) {
+        bestCost = candidate;
+        bestIndex = i;
       }
-      final chosen = remaining.removeAt(bestIndex);
-      order.add(chosen);
-      current = destinations[chosen];
     }
-    return order;
+    current = remaining.removeAt(bestIndex);
+    order.add(current);
   }
 
-  List<int> _twoOpt(GeoPoint origin, List<GeoPoint> destinations, List<int> order) {
-    if (order.length < 3) return order;
-    final best = List<int>.from(order);
+  double tripCost(List<int> nodes) {
+    var total = 0.0;
+    var from = 0;
+    for (final node in nodes) {
+      total += cost(from, node);
+      from = node;
+    }
+    return total;
+  }
+
+  if (order.length >= 3) {
     var improved = true;
     while (improved) {
       improved = false;
-      for (var i = 0; i < best.length - 1; i++) {
-        for (var j = i + 1; j < best.length; j++) {
-          final candidate = List<int>.from(best)
-            ..setRange(i, j + 1, best.sublist(i, j + 1).reversed);
-          if (_pathLength(origin, destinations, candidate) <
-              _pathLength(origin, destinations, best) - 0.5) {
-            best.setAll(0, candidate);
+      for (var i = 0; i < order.length - 1; i++) {
+        for (var j = i + 1; j < order.length; j++) {
+          final candidate = List<int>.from(order)
+            ..setRange(i, j + 1, order.sublist(i, j + 1).reversed);
+          if (tripCost(candidate) < tripCost(order) - 0.5) {
+            order.setAll(0, candidate);
             improved = true;
           }
         }
       }
     }
-    return best;
   }
-
-  double _pathLength(GeoPoint origin, List<GeoPoint> destinations, List<int> order) {
-    var total = 0.0;
-    var current = origin;
-    for (final index in order) {
-      total += current.distanceTo(destinations[index]);
-      current = destinations[index];
-    }
-    return total;
-  }
+  return [for (final node in order) node - 1];
 }
 
 /// Google Routes API (`directions/v2:computeRoutes`) implementation.
@@ -371,6 +375,141 @@ class GoogleDirectionsService implements DirectionsService {
     if (value is! String) return Duration.zero;
     final seconds = double.tryParse(value.replaceAll('s', '')) ?? 0;
     return Duration(seconds: seconds.round());
+  }
+}
+
+/// OSRM (`project-osrm.org`) implementation: real road geometry and real
+/// driving times from OpenStreetMap, with no API key and no request quota.
+///
+/// OSRM has no traffic data at all, so its durations are free flow and the
+/// rush-hour model of [trafficProfile] is applied on top, per leg, for the time
+/// that leg is predicted to be driven. Ordering uses one `/table` request for
+/// the travel-time matrix — the demo server's `/trip` service optimizes a round
+/// trip back to the start, which is not what a delivery run does.
+class OsrmDirectionsService implements DirectionsService {
+  OsrmDirectionsService({
+    http.Client? client,
+    Uri? baseUrl,
+    this.profile = 'driving',
+    this.trafficProfile = const TrafficProfile(),
+  })  : _client = client ?? http.Client(),
+        baseUrl = baseUrl ?? Uri.parse('https://router.project-osrm.org');
+
+  final http.Client _client;
+  final Uri baseUrl;
+
+  /// OSRM routing profile; the demo server only serves `driving`.
+  final String profile;
+  final TrafficProfile trafficProfile;
+
+  @override
+  Future<RoutePlan> optimizedRoute({
+    required GeoPoint origin,
+    required List<GeoPoint> destinations,
+    DateTime? departureTime,
+    List<Duration> dwellTimes = const [],
+  }) async {
+    if (destinations.isEmpty) return RoutePlan.empty;
+    final order = destinations.length == 1
+        ? [0]
+        : solveVisitingOrder(
+            destinations.length,
+            await _travelTimeMatrix([origin, ...destinations]),
+          );
+
+    final ordered = [for (final index in order) destinations[index]];
+    final route = await _route([origin, ...ordered]);
+    final osrmLegs = route['legs'] as List;
+
+    final legs = <RouteLeg>[];
+    var from = origin;
+    var cursor = departureTime ?? DateTime.now();
+    for (var i = 0; i < osrmLegs.length && i < ordered.length; i++) {
+      final leg = _parseLeg(osrmLegs[i] as Map<String, dynamic>, from, ordered[i], cursor);
+      legs.add(leg);
+      final index = order[i];
+      cursor = cursor.add(leg.duration).add(
+            index < dwellTimes.length ? dwellTimes[index] : Duration.zero,
+          );
+      from = ordered[i];
+    }
+    return RoutePlan(waypointOrder: order, legs: legs);
+  }
+
+  RouteLeg _parseLeg(
+    Map<String, dynamic> leg,
+    GeoPoint from,
+    GeoPoint to,
+    DateTime departure,
+  ) {
+    final freeFlowSeconds = ((leg['duration'] as num?) ?? 0).toDouble();
+    final polyline = _legGeometry(leg);
+    return RouteLeg(
+      origin: from,
+      destination: to,
+      distanceMeters: ((leg['distance'] as num?) ?? 0).toDouble(),
+      duration: Duration(
+        seconds: (freeFlowSeconds * trafficProfile.multiplierAt(departure)).round(),
+      ),
+      freeFlowDuration: Duration(seconds: freeFlowSeconds.round()),
+      departureTime: departure,
+      polyline: polyline.length < 2 ? [from, to] : polyline,
+    );
+  }
+
+  /// OSRM returns geometry per step rather than per leg, so a leg's road is the
+  /// steps stitched together.
+  List<GeoPoint> _legGeometry(Map<String, dynamic> leg) {
+    final points = <GeoPoint>[];
+    for (final step in (leg['steps'] as List?) ?? const []) {
+      final geometry = (step as Map<String, dynamic>)['geometry'];
+      if (geometry is! String) continue;
+      final decoded = decodePolyline(geometry);
+      points.addAll(points.isEmpty ? decoded : decoded.skip(1));
+    }
+    return points;
+  }
+
+  Future<double Function(int, int)> _travelTimeMatrix(List<GeoPoint> points) async {
+    final response = await _get('table', points, {'annotations': 'duration'});
+    final durations = (response['durations'] as List)
+        .map((row) => [for (final value in row as List) ((value as num?) ?? 0).toDouble()])
+        .toList();
+    return (from, to) => durations[from][to];
+  }
+
+  Future<Map<String, dynamic>> _route(List<GeoPoint> points) async {
+    final response = await _get('route', points, {
+      'overview': 'false',
+      'geometries': 'polyline',
+      'steps': 'true',
+    });
+    final routes = response['routes'] as List? ?? const [];
+    if (routes.isEmpty) throw DirectionsException('OSRM returned no route');
+    return routes.first as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> _get(
+    String service,
+    List<GeoPoint> points,
+    Map<String, String> query,
+  ) async {
+    final coordinates = [
+      for (final point in points) '${point.longitude},${point.latitude}',
+    ].join(';');
+    final uri = baseUrl.replace(
+      path: '${baseUrl.path}/$service/v1/$profile/$coordinates',
+      queryParameters: query,
+    );
+    final response = await _client.get(uri);
+    if (response.statusCode != 200) {
+      throw DirectionsException('OSRM returned HTTP ${response.statusCode}: ${response.body}');
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    if (decoded['code'] != 'Ok') {
+      throw DirectionsException('OSRM returned ${decoded['code']}: ${decoded['message']}');
+    }
+    return decoded;
   }
 }
 
