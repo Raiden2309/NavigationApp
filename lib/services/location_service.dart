@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:geolocator/geolocator.dart';
+
 import '../models/geo.dart';
 import 'mission_clock.dart';
 
@@ -20,23 +22,6 @@ class OperatorPosition {
 }
 
 /// Live position feed for the operator's device.
-///
-/// The production implementation wraps the platform geolocation API, e.g. with
-/// the `geolocator` package:
-///
-/// ```dart
-/// class GeolocatorLocationService implements LocationService {
-///   @override
-///   Stream<OperatorPosition> get positions => Geolocator.getPositionStream(
-///         locationSettings: const LocationSettings(distanceFilter: 5),
-///       ).map((p) => OperatorPosition(
-///             point: GeoPoint(p.latitude, p.longitude),
-///             speedMetersPerSecond: p.speed,
-///             headingDegrees: p.heading,
-///             timestamp: p.timestamp,
-///           ));
-/// }
-/// ```
 abstract class LocationService {
   Stream<OperatorPosition> get positions;
 
@@ -45,6 +30,91 @@ abstract class LocationService {
   Future<void> start();
 
   Future<void> stop();
+}
+
+/// Tracks the operator with the platform geolocation API (GPS on mobile, the
+/// browser geolocation API on web).
+class GeolocatorLocationService implements LocationService {
+  GeolocatorLocationService({
+    this.distanceFilterMeters = 10,
+    this.accuracy = LocationAccuracy.high,
+  });
+
+  /// Minimum movement before a new fix is emitted; keeps a parked vehicle from
+  /// flooding the mission engine with jitter.
+  final int distanceFilterMeters;
+
+  final LocationAccuracy accuracy;
+
+  final StreamController<OperatorPosition> _controller =
+      StreamController<OperatorPosition>.broadcast();
+  StreamSubscription<Position>? _subscription;
+  OperatorPosition? _last;
+
+  @override
+  Stream<OperatorPosition> get positions => _controller.stream;
+
+  @override
+  OperatorPosition? get lastPosition => _last;
+
+  @override
+  Future<void> start() async {
+    if (_subscription != null) return;
+    await _ensurePermission();
+    _emit(await Geolocator.getCurrentPosition(
+      locationSettings: LocationSettings(accuracy: accuracy),
+    ));
+    _subscription = Geolocator.getPositionStream(
+      locationSettings: LocationSettings(
+        accuracy: accuracy,
+        distanceFilter: distanceFilterMeters,
+      ),
+    ).listen(_emit, onError: _controller.addError);
+  }
+
+  @override
+  Future<void> stop() async {
+    await _subscription?.cancel();
+    _subscription = null;
+  }
+
+  Future<void> _ensurePermission() async {
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      throw const LocationUnavailableException('Location services are turned off');
+    }
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      throw const LocationUnavailableException('Location permission denied');
+    }
+  }
+
+  void _emit(Position position) {
+    _last = OperatorPosition(
+      point: GeoPoint(position.latitude, position.longitude),
+      speedMetersPerSecond: position.speed,
+      headingDegrees: position.heading,
+      timestamp: position.timestamp,
+    );
+    _controller.add(_last!);
+  }
+
+  void dispose() {
+    unawaited(stop());
+    _controller.close();
+  }
+}
+
+class LocationUnavailableException implements Exception {
+  const LocationUnavailableException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'LocationUnavailableException: $message';
 }
 
 /// Drives a fake operator along the planned route so the app can be exercised

@@ -5,6 +5,7 @@ import 'package:mission_router/models/mission.dart';
 import 'package:mission_router/services/directions_service.dart';
 import 'package:mission_router/services/location_service.dart';
 import 'package:mission_router/services/mission_engine.dart';
+import 'package:mission_router/services/places_service.dart';
 import 'package:mission_router/ui/mission_screen.dart';
 
 void main() {
@@ -26,7 +27,9 @@ void main() {
     );
     await engine.initialize();
 
-    await tester.pumpWidget(MaterialApp(home: MissionScreen(engine: engine)));
+    await tester.pumpWidget(MaterialApp(
+      home: MissionScreen(engine: engine, places: const MockPlacesService()),
+    ));
     await tester.pump();
 
     expect(find.text('Mission Router'), findsOneWidget);

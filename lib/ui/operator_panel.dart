@@ -26,6 +26,8 @@ class OperatorPanel extends StatelessWidget {
           now: now,
           remainingDistance: engine.remainingDistanceMeters,
           stopsLeft: etas.length,
+          driveTime: engine.remainingDriveTime,
+          trafficDelay: engine.remainingTrafficDelay,
         ),
         const SizedBox(height: 12),
         if (current != null) _NextStopCard(engine: engine, eta: current, now: now),
@@ -43,7 +45,7 @@ class OperatorPanel extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(top: 16),
             child: Text(
-              'Routing error: ${engine.lastError}',
+              'Live data issue: ${engine.lastError}',
               style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
           ),
@@ -58,12 +60,16 @@ class _MissionSummary extends StatelessWidget {
     required this.now,
     required this.remainingDistance,
     required this.stopsLeft,
+    required this.driveTime,
+    required this.trafficDelay,
   });
 
   final DateTime? completion;
   final DateTime now;
   final double remainingDistance;
   final int stopsLeft;
+  final Duration driveTime;
+  final Duration trafficDelay;
 
   @override
   Widget build(BuildContext context) {
@@ -85,7 +91,16 @@ class _MissionSummary extends StatelessWidget {
               Text('in ${formatDuration(completion!.difference(now))}',
                   style: theme.textTheme.bodyMedium),
             const SizedBox(height: 8),
-            Text('$stopsLeft stop(s) left · ${formatDistance(remainingDistance)} of driving'),
+            Text('$stopsLeft stop(s) left · ${formatDistance(remainingDistance)} · '
+                '${formatDuration(driveTime)} driving'),
+            if (trafficDelay > Duration.zero)
+              Row(
+                children: [
+                  const Icon(Icons.traffic, size: 16),
+                  const SizedBox(width: 4),
+                  Expanded(child: Text('${formatDuration(trafficDelay)} of that is traffic')),
+                ],
+              ),
           ],
         ),
       ),
@@ -112,6 +127,8 @@ class _NextStopCard extends StatelessWidget {
           children: [
             Text(onSite ? 'On site at' : 'Next stop', style: theme.textTheme.labelLarge),
             Text(eta.point.label, style: theme.textTheme.titleLarge),
+            if (eta.point.address != null)
+              Text(eta.point.address!, style: theme.textTheme.bodySmall),
             const SizedBox(height: 8),
             if (onSite) ...[
               Text('Task time left: ${formatDuration(eta.point.remainingDwell(now))}',
@@ -185,7 +202,7 @@ class _StartTile extends StatelessWidget {
       dense: true,
       leading: const CircleAvatar(child: Text('A')),
       title: Text(point.label),
-      subtitle: const Text('Starting point'),
+      subtitle: Text(point.address == null ? 'Starting point' : 'Starting point · ${point.address}'),
       trailing: point.completedAt == null
           ? null
           : Text('Departed ${formatClockTime(point.completedAt!)}'),

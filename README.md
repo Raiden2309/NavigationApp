@@ -4,19 +4,23 @@ Flutter mission-routing service: an operator is dispatched from **Point A** (sta
 through a set of destinations, driving the optimal route, spending an allowance of
 **15 minutes** at each stop, with the **mission completion ETA updated live**.
 
-The app runs fully offline against mocked Google Maps / geolocation providers, so it can be
-demoed without an API key. Both providers sit behind interfaces and swap to the real APIs
-without touching the mission logic.
+Destinations are real places, routed with the **Google Routes API**: the optimal visiting order,
+traffic-aware leg durations, and each leg priced for the time it is actually driven — so a mission
+that runs into the evening rush hour is estimated at rush hour speeds.
+
+Without an API key the same interfaces are served by offline mocks (a gazetteer of real sites, a
+time-of-day traffic model and a simulated operator), so the app can be demoed with no key and the
+tests run without network access.
 
 ## What it does
 
 | Requirement | Where |
 | --- | --- |
-| Point A is the start; the route through the remaining points is optimized | `DirectionsService.optimizedRoute` (`waypoints=optimize:true` on the real API, nearest-neighbour + 2-opt in the mock) |
+| Point A is the start; the route through the remaining points is optimized | `DirectionsService.optimizedRoute` (`optimizeWaypointOrder` on the Routes API, nearest-neighbour + 2-opt in the mock) |
 | Live tracking of the operator | `LocationService` position stream, projected onto the planned polyline |
 | Points after A can be added / moved / removed by a Mission Operator | `MissionEngine.addDestination` / `updateDestination` / `removeDestination` → immediate re-optimization of the remaining stops |
 | 15 minutes of on-site tasks per destination | `MissionPoint.dwellTime` (`defaultDwellTime`), started by the arrival geofence, editable per stop |
-| Live mission completion ETA | `MissionEngine.etas` / `missionCompletionEta`, recomputed on every position fix and tick |
+| Live, traffic-aware mission completion ETA | `MissionEngine.etas` / `missionCompletionEta`, recomputed on every position fix and tick |
 
 Behavioural details:
 
@@ -35,25 +39,64 @@ flutter run -d chrome        # or any device
 flutter test
 ```
 
-The demo runs on an accelerated mission clock (`ScaledClock`, default 60x, switchable in the app
-bar) so a 15 minute dwell plays out in 15 seconds. The **Operator** tab is the driver's live view;
-the **Mission Control** tab edits the destinations — tap the map to drop a new one.
+Without a key the app uses the offline mocks (synthetic roads, a gazetteer of real Singapore
+sites, a simulated operator) and an accelerated mission clock (`ScaledClock`, default 60x,
+switchable in the app bar) so a 15 minute dwell plays out in 15 seconds. The **Operator** tab is
+the driver's live view; the **Mission Control** tab edits the destinations — search for a place or
+tap the map to drop one.
 
-## Switching to the real Google APIs
-
-Routing: pass a key and the real Directions client is used instead of the mock.
+## Real Google APIs
 
 ```bash
-flutter run --dart-define=GOOGLE_MAPS_API_KEY=your_key
+flutter run -d chrome \
+  --dart-define=GOOGLE_MAPS_API_KEY=your_key \
+  --dart-define=USE_DEVICE_LOCATION=true      # optional: track the real device
 ```
 
-`GoogleDirectionsService` requests the route with `waypoints=optimize:true` and
-`departure_time=now`, so Google returns both the optimal visiting order (`waypoint_order`) and
-traffic-aware leg durations (`duration_in_traffic`).
+Enable **Routes API** and **Places API (New)** on the Google Cloud project (the legacy Directions,
+Geocoding and Places endpoints are not enabled for projects created after March 2025) and restrict
+the key to those two APIs. Both APIs send CORS headers, so web builds call them directly — no
+proxy needed. The key is only read from `--dart-define`, never committed.
 
-Tracking: implement `LocationService` on top of the platform geolocation API (e.g. the
-`geolocator` package — see the doc comment on `LocationService`) and pass it to `MissionEngine`
-instead of `SimulatedLocationService`. Nothing else changes.
+### Traffic and rush hour
+
+`GoogleDirectionsService` calls `routes.googleapis.com/directions/v2:computeRoutes`:
+
+- `optimizeWaypointOrder: true` returns the optimal visiting order
+  (`optimizedIntermediateWaypointIndex`) for the stops after Point A.
+- `routingPreference: TRAFFIC_AWARE` (the API rejects `TRAFFIC_AWARE_OPTIMAL` together with
+  waypoint optimization; single-leg requests do use `TRAFFIC_AWARE_OPTIMAL`).
+- `duration` is the traffic-aware travel time and `staticDuration` the same route without traffic;
+  the difference is surfaced as the traffic delay in the operator view.
+- **Each leg is re-quoted with its own `departureTime`** — the predicted arrival at the previous
+  stop plus that stop's 15 minute allowance. One request prices the whole route from a single
+  departure, which would quote the last leg with the traffic of the first; a mission leaving the
+  depot at 16:00 really drives its final leg at 18:30, so that leg is priced for 18:30.
+- Departure times in the past are clamped to now, and a failed re-quote keeps the estimate from
+  the planning request instead of failing the mission.
+
+Measured against the live API for the demo mission (Jurong Port → Keppel Distripark → Changi
+Airfreight → Woodlands Checkpoint), departing 18:00 SGT: 108 min with traffic vs 87 min free flow.
+
+`tool/live_check.dart` prints the optimized order and per-leg traffic vs free-flow durations:
+
+```bash
+GOOGLE_MAPS_API_KEY=... dart run tool/live_check.dart
+```
+
+### Places
+
+`GooglePlacesService` uses Places Autocomplete (New) for the search box, Place Details for the
+coordinates and address, and `places:searchNearby` to name a pin dropped on the map. Offline, the
+same interface is served by `MockPlacesService` over a list of real Singapore sites.
+
+### Live tracking
+
+`GeolocatorLocationService` wraps the platform geolocation API (GPS on mobile, the browser
+geolocation API on web): it checks that location services are on, requests permission, and streams
+fixes with a 10 m distance filter. A denied permission surfaces in the operator view instead of
+breaking the mission. Android permissions are declared in `AndroidManifest.xml`; add
+`NSLocationWhenInUseUsageDescription` when adding the iOS target.
 
 Map: `RouteMap` is a `CustomPainter` stand-in that draws the polyline, the stops and the live
 operator marker. Replace it with `GoogleMap` from `google_maps_flutter`, feeding
@@ -64,8 +107,10 @@ operator marker. Replace it with `GoogleMap` from `google_maps_flutter`, feeding
 ```
 lib/
   models/       geo.dart (distance/projection maths), mission.dart (MissionPoint, RouteLeg, RoutePlan)
-  services/     directions_service.dart (mock + Google), location_service.dart (simulated + real),
+  services/     directions_service.dart (mock + Routes API), places_service.dart (mock + Places API),
+                location_service.dart (simulated + geolocator), traffic_profile.dart (mock rush hour),
                 mission_clock.dart, mission_engine.dart (state, arrival, dwell, live ETAs)
   ui/           mission_screen.dart, operator_panel.dart, mission_control_panel.dart, route_map.dart
-test/           geo, directions, mission engine (arrival, dwell, re-planning) and widget tests
+test/           geo, directions, traffic-aware routing, mission engine and widget tests
+tool/           live_check.dart (smoke-checks the real APIs with a key)
 ```

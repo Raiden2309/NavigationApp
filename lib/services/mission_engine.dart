@@ -57,7 +57,6 @@ class MissionEngine extends ChangeNotifier {
   RoutePlan _plan = RoutePlan.empty;
   List<MissionPoint> _routeOrder = const [];
   List<double> _legEndDistances = const [];
-  double _planSpeedMps = 40 * 1000 / 3600;
   GeoPoint? _operatorPosition;
   MissionStatus _status = MissionStatus.planning;
   bool _replanning = false;
@@ -85,8 +84,14 @@ class MissionEngine extends ChangeNotifier {
   Future<void> initialize() async {
     _operatorPosition = _location.lastPosition?.point ?? startingPoint.location;
     await _replan();
-    _subscription = _location.positions.listen(_onPosition);
-    await _location.start();
+    _subscription = _location.positions.listen(_onPosition, onError: _onLocationError);
+    try {
+      await _location.start();
+    } catch (error) {
+      // A denied permission or disabled GPS must not take the mission plan
+      // down with it; the operator still sees the route and ETAs.
+      _onLocationError(error);
+    }
     _ticker ??= Timer.periodic(refreshInterval, (_) => _refresh());
   }
 
@@ -130,13 +135,20 @@ class MissionEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> updateDestination(String id, {String? label, GeoPoint? location, Duration? dwellTime}) async {
+  Future<void> updateDestination(
+    String id, {
+    String? label,
+    GeoPoint? location,
+    String? address,
+    Duration? dwellTime,
+  }) async {
     final index = _destinations.indexWhere((p) => p.id == id);
     if (index < 0) return;
     final existing = _destinations[index];
     if (existing.isCompleted) return;
     existing.label = label ?? existing.label;
     existing.location = location ?? existing.location;
+    existing.address = address ?? existing.address;
     existing.dwellTime = dwellTime ?? existing.dwellTime;
     await _replan();
     notifyListeners();
@@ -163,7 +175,7 @@ class MissionEngine extends ChangeNotifier {
     for (var i = 0; i < _routeOrder.length; i++) {
       final point = _routeOrder[i];
       final onSiteNow = i == 0 && _status == MissionStatus.onSite;
-      final arrival = onSiteNow ? (point.arrivedAt ?? now) : cursor.add(_travelTimeToLeg(i));
+      final arrival = onSiteNow ? (point.arrivedAt ?? now) : cursor.add(_travelTimeForLeg(i));
       final departure = onSiteNow
           ? now.add(point.remainingDwell(now))
           : arrival.add(point.dwellTime);
@@ -185,7 +197,10 @@ class MissionEngine extends ChangeNotifier {
     return all.isEmpty ? null : all.last.departure;
   }
 
-  Duration get remainingDriveTime => _travelTimeToLeg(math.max(0, _routeOrder.length - 1));
+  Duration get remainingDriveTime => _travelTimeToLeg(_plan.legs.length - 1);
+
+  /// Driving time that traffic adds to the stops still ahead.
+  Duration get remainingTrafficDelay => _plan.totalTrafficDelay;
 
   double get remainingDistanceMeters =>
       _routeOrder.isEmpty ? 0 : _remainingDistanceToLeg(_routeOrder.length - 1);
@@ -194,7 +209,13 @@ class MissionEngine extends ChangeNotifier {
 
   void _onPosition(OperatorPosition position) {
     _operatorPosition = position.point;
+    _lastError = null;
     _refresh();
+  }
+
+  void _onLocationError(Object error) {
+    _lastError = error;
+    notifyListeners();
   }
 
   void _refresh() {
@@ -260,9 +281,15 @@ class MissionEngine extends ChangeNotifier {
       // re-optimized so the operator is never re-routed mid-task.
       final anchored = pending.firstWhereOrNull((p) => p.status == MissionPointStatus.onSite);
       final optimizable = pending.where((p) => p != anchored).toList();
+      final now = clock.now();
+      // Driving only resumes once the current stop's tasks are done, so that is
+      // the departure time the traffic for the next leg must be priced for.
+      final departure = anchored == null ? now : now.add(anchored.remainingDwell(now));
       final plan = await _directions.optimizedRoute(
         origin: anchored?.location ?? origin,
         destinations: [for (final p in optimizable) p.location],
+        departureTime: departure,
+        dwellTimes: [for (final p in optimizable) p.dwellTime],
       );
       final ordered = [
         ?anchored,
@@ -314,9 +341,6 @@ class MissionEngine extends ChangeNotifier {
       ends.add(cumulative);
     }
     _legEndDistances = ends;
-    final totalSeconds = _plan.totalDrivingTime.inMilliseconds / 1000;
-    _planSpeedMps = totalSeconds > 0 ? _plan.totalDistanceMeters / totalSeconds : 40 * 1000 / 3600;
-    if (_planSpeedMps <= 0) _planSpeedMps = 40 * 1000 / 3600;
   }
 
   double _travelledOnPlan() {
@@ -332,9 +356,26 @@ class MissionEngine extends ChangeNotifier {
     return remaining < 0 ? 0 : remaining;
   }
 
+  /// Traffic-aware time left on leg [legIndex] alone: its full duration, or
+  /// the pro-rata remainder when the operator is already driving it.
+  Duration _travelTimeForLeg(int legIndex) {
+    if (legIndex < 0 || legIndex >= _plan.legs.length) return Duration.zero;
+    final leg = _plan.legs[legIndex];
+    if (leg.distanceMeters <= 0) return Duration.zero;
+    final legEnd = _legEndDistances[legIndex];
+    final legStart = legEnd - leg.distanceMeters;
+    final travelled = _travelledOnPlan();
+    if (travelled >= legEnd) return Duration.zero;
+    final remaining = legEnd - math.max(travelled, legStart);
+    return leg.duration * (remaining / leg.distanceMeters).clamp(0.0, 1.0);
+  }
+
   Duration _travelTimeToLeg(int legIndex) {
-    final meters = _remainingDistanceToLeg(legIndex);
-    return Duration(seconds: (meters / _planSpeedMps).round());
+    var total = Duration.zero;
+    for (var i = 0; i <= legIndex; i++) {
+      total += _travelTimeForLeg(i);
+    }
+    return total;
   }
 
   void _followPlan() {

@@ -4,6 +4,7 @@ import '../models/geo.dart';
 import '../models/mission.dart';
 import '../services/mission_clock.dart';
 import '../services/mission_engine.dart';
+import '../services/places_service.dart';
 import 'formatting.dart';
 import 'operator_panel.dart';
 import 'mission_control_panel.dart';
@@ -12,9 +13,18 @@ import 'route_map.dart';
 /// Splits the app into the live operator view and the mission operator's
 /// editor for the destinations after Point A.
 class MissionScreen extends StatefulWidget {
-  const MissionScreen({super.key, required this.engine});
+  const MissionScreen({
+    super.key,
+    required this.engine,
+    required this.places,
+    this.liveApis = false,
+  });
 
   final MissionEngine engine;
+  final PlacesService places;
+
+  /// Whether the real Google APIs are in use rather than the offline mocks.
+  final bool liveApis;
 
   @override
   State<MissionScreen> createState() => _MissionScreenState();
@@ -44,6 +54,11 @@ class _MissionScreenState extends State<MissionScreen> with SingleTickerProvider
             title: const Text('Mission Router'),
             backgroundColor: theme.colorScheme.inversePrimary,
             actions: [
+              Chip(
+                avatar: Icon(widget.liveApis ? Icons.cloud_done : Icons.cloud_off, size: 18),
+                label: Text(widget.liveApis ? 'Google APIs' : 'Mock data'),
+              ),
+              const SizedBox(width: 12),
               _StatusChip(status: engine.status),
               const SizedBox(width: 12),
               _ClockControl(clock: engine.clock),
@@ -60,7 +75,7 @@ class _MissionScreenState extends State<MissionScreen> with SingleTickerProvider
                 operatorPosition: engine.operatorPosition,
                 onMapTap: _editing ? _addPointAt : null,
               );
-              final panel = _Panel(tabs: _tabs, engine: engine);
+              final panel = _Panel(tabs: _tabs, engine: engine, places: widget.places);
               if (constraints.maxWidth < 900) {
                 return Column(
                   children: [
@@ -82,23 +97,33 @@ class _MissionScreenState extends State<MissionScreen> with SingleTickerProvider
     );
   }
 
+  /// Map taps drop a real place: the coordinate is reverse geocoded so the stop
+  /// carries a name and address rather than a bare latitude/longitude.
   Future<void> _addPointAt(GeoPoint location) async {
+    Place? place;
+    try {
+      place = await widget.places.reverseGeocode(location);
+    } catch (_) {
+      place = null;
+    }
     final nextLetter = String.fromCharCode(
       'A'.codeUnitAt(0) + (engine.destinations.length + 1).clamp(0, 25),
     );
     await engine.addDestination(MissionPoint(
       id: 'p${DateTime.now().microsecondsSinceEpoch}',
-      label: 'Point $nextLetter',
+      label: place?.name ?? 'Point $nextLetter',
+      address: place?.address,
       location: location,
     ));
   }
 }
 
 class _Panel extends StatelessWidget {
-  const _Panel({required this.tabs, required this.engine});
+  const _Panel({required this.tabs, required this.engine, required this.places});
 
   final TabController tabs;
   final MissionEngine engine;
+  final PlacesService places;
 
   @override
   Widget build(BuildContext context) {
@@ -116,7 +141,7 @@ class _Panel extends StatelessWidget {
             controller: tabs,
             children: [
               OperatorPanel(engine: engine),
-              MissionControlPanel(engine: engine),
+              MissionControlPanel(engine: engine, places: places),
             ],
           ),
         ),

@@ -5,63 +5,88 @@ import 'package:http/http.dart' as http;
 
 import '../models/geo.dart';
 import '../models/mission.dart';
+import 'traffic_profile.dart';
 
-/// Computes the optimal visiting order and the driving legs between stops.
+/// Computes the optimal visiting order and the traffic-aware driving legs
+/// between stops.
 ///
-/// [MockDirectionsService] is used by default so the app runs without any API
-/// key; [GoogleDirectionsService] talks to the real Directions API and is a
-/// drop-in replacement.
+/// Each leg is priced for the time it is actually predicted to be driven —
+/// the arrival at the previous stop plus that stop's on-site allowance — so a
+/// mission that runs into rush hour is estimated with rush hour traffic rather
+/// than with the conditions at the moment of planning.
 abstract class DirectionsService {
   Future<RoutePlan> optimizedRoute({
     required GeoPoint origin,
     required List<GeoPoint> destinations,
+
+    /// When the operator leaves [origin]. Defaults to now.
+    DateTime? departureTime,
+
+    /// On-site time per entry of [destinations], added between legs when
+    /// predicting each leg's departure time.
+    List<Duration> dwellTimes = const [],
   });
 }
 
 /// Offline stand-in for the Directions API.
 ///
 /// Distances are great-circle distances inflated by [detourFactor] to
-/// approximate road networks, and the visiting order is solved with
-/// nearest-neighbour + 2-opt, which mirrors `waypoints=optimize:true`.
+/// approximate road networks, the visiting order is solved with
+/// nearest-neighbour + 2-opt (mirroring `waypoints=optimize:true`), and travel
+/// times are scaled by [trafficProfile] for the predicted departure time of
+/// each leg (mirroring `duration_in_traffic`).
 class MockDirectionsService implements DirectionsService {
   MockDirectionsService({
     this.averageSpeedKmh = 40,
     this.detourFactor = 1.25,
     this.pointsPerLeg = 24,
-    int seed = 7,
-  }) : _random = math.Random(seed);
+    this.trafficProfile = const TrafficProfile(),
+  });
 
   final double averageSpeedKmh;
   final double detourFactor;
   final int pointsPerLeg;
-  final math.Random _random;
+  final TrafficProfile trafficProfile;
 
   @override
   Future<RoutePlan> optimizedRoute({
     required GeoPoint origin,
     required List<GeoPoint> destinations,
+    DateTime? departureTime,
+    List<Duration> dwellTimes = const [],
   }) async {
     if (destinations.isEmpty) return RoutePlan.empty;
     final order = _solveOrder(origin, destinations);
     final legs = <RouteLeg>[];
     var from = origin;
+    var cursor = departureTime ?? DateTime.now();
     for (final index in order) {
       final to = destinations[index];
-      legs.add(_buildLeg(from, to));
+      final leg = _buildLeg(from, to, cursor);
+      legs.add(leg);
+      cursor = cursor.add(leg.duration).add(
+            index < dwellTimes.length ? dwellTimes[index] : Duration.zero,
+          );
       from = to;
     }
     return RoutePlan(waypointOrder: order, legs: legs);
   }
 
-  RouteLeg _buildLeg(GeoPoint from, GeoPoint to) {
+  RouteLeg _buildLeg(GeoPoint from, GeoPoint to, DateTime departure) {
     final polyline = _syntheticRoad(from, to);
     final distance = polylineLength(polyline);
-    final seconds = distance / (averageSpeedKmh * 1000 / 3600);
+    final freeFlowSeconds = distance / (averageSpeedKmh * 1000 / 3600);
+    final freeFlow = Duration(seconds: freeFlowSeconds.round());
+    final congested = Duration(
+      seconds: (freeFlowSeconds * trafficProfile.multiplierAt(departure)).round(),
+    );
     return RouteLeg(
       origin: from,
       destination: to,
       distanceMeters: distance,
-      duration: Duration(seconds: seconds.round()),
+      duration: congested,
+      freeFlowDuration: freeFlow,
+      departureTime: departure,
       polyline: polyline,
     );
   }
@@ -76,7 +101,9 @@ class MockDirectionsService implements DirectionsService {
     final normalLat = -(to.longitude - from.longitude);
     final normalLng = to.latitude - from.latitude;
     final normalLength = math.sqrt(normalLat * normalLat + normalLng * normalLng);
-    final phase = _random.nextDouble() * math.pi;
+    // Derived from the coordinates so a leg keeps the same shape and length
+    // across replans.
+    final phase = ((from.latitude + to.longitude) * 1000).abs() % math.pi;
     final points = <GeoPoint>[];
     for (var i = 0; i <= pointsPerLeg; i++) {
       final t = i / pointsPerLeg;
@@ -150,81 +177,196 @@ class MockDirectionsService implements DirectionsService {
   }
 }
 
-/// Google Directions API implementation.
+/// Google Routes API (`directions/v2:computeRoutes`) implementation.
 ///
-/// Requests the route with `waypoints=optimize:true` so Google returns the
-/// optimal visiting order for every stop after the starting point.
+/// The visiting order comes from one `optimizeWaypointOrder` request. Every
+/// later leg is then re-quoted with its own `departureTime`, because a single
+/// request prices the whole route from one departure and would otherwise quote
+/// the last leg with the traffic of the first — the difference between leaving
+/// the depot at 16:00 and driving the final leg at 18:30.
 class GoogleDirectionsService implements DirectionsService {
-  GoogleDirectionsService({required this.apiKey, http.Client? client})
-      : _client = client ?? http.Client();
+  GoogleDirectionsService({
+    required this.apiKey,
+    http.Client? client,
+    this.repriceLegs = true,
+    Uri? endpoint,
+    DateTime Function()? now,
+  })  : _client = client ?? http.Client(),
+        endpoint = endpoint ??
+            Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes'),
+        _now = now ?? DateTime.now;
 
   final String apiKey;
   final http.Client _client;
+  final Uri endpoint;
+
+  /// Re-requests every leg after the first with its own predicted departure
+  /// time. Costs one extra request per leg; disable to stay on one request.
+  final bool repriceLegs;
+
+  final DateTime Function() _now;
+
+  static const _fieldMask = 'routes.optimizedIntermediateWaypointIndex,'
+      'routes.legs.duration,routes.legs.staticDuration,routes.legs.distanceMeters,'
+      'routes.legs.startLocation,routes.legs.endLocation,'
+      'routes.legs.polyline.encodedPolyline';
 
   @override
   Future<RoutePlan> optimizedRoute({
     required GeoPoint origin,
     required List<GeoPoint> destinations,
+    DateTime? departureTime,
+    List<Duration> dwellTimes = const [],
   }) async {
     if (destinations.isEmpty) return RoutePlan.empty;
-    final last = destinations.last;
-    final intermediate = destinations.sublist(0, destinations.length - 1);
-    final uri = Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
-      'origin': _format(origin),
-      'destination': _format(last),
-      if (intermediate.isNotEmpty)
-        'waypoints': 'optimize:true|${intermediate.map(_format).join('|')}',
-      'mode': 'driving',
-      'departure_time': 'now',
-      'key': apiKey,
-    });
+    final start = departureTime ?? _now();
+    final intermediates = destinations.sublist(0, destinations.length - 1);
 
-    final response = await _client.get(uri);
-    if (response.statusCode != 200) {
-      throw DirectionsException('Directions API returned HTTP ${response.statusCode}');
-    }
-    final body = jsonDecode(response.body) as Map<String, dynamic>;
-    final status = body['status'] as String? ?? 'UNKNOWN';
-    if (status != 'OK') {
-      throw DirectionsException('Directions API status $status: ${body['error_message'] ?? ''}');
-    }
+    final route = await _computeRoute(
+      origin: origin,
+      destination: destinations.last,
+      intermediates: intermediates,
+      departure: start,
+    );
 
-    final route = (body['routes'] as List).first as Map<String, dynamic>;
+    final optimized = (route['optimizedIntermediateWaypointIndex'] as List?) ?? const [];
     final waypointOrder = [
-      ...((route['waypoint_order'] as List?) ?? const []).map((e) => e as int),
+      for (final index in optimized) index as int,
       destinations.length - 1,
     ];
-    final legs = [
-      for (final leg in route['legs'] as List) _parseLeg(leg as Map<String, dynamic>),
+    var legs = [
+      for (final leg in route['legs'] as List) _parseLeg(leg as Map<String, dynamic>, start),
     ];
+    if (repriceLegs && legs.length > 1) {
+      legs = await _repriceLegs(legs, waypointOrder, dwellTimes, start);
+    }
     return RoutePlan(waypointOrder: waypointOrder, legs: legs);
   }
 
-  RouteLeg _parseLeg(Map<String, dynamic> leg) {
-    final start = leg['start_location'] as Map<String, dynamic>;
-    final end = leg['end_location'] as Map<String, dynamic>;
-    // duration_in_traffic is only present when a departure_time is supplied.
-    final duration = (leg['duration_in_traffic'] ?? leg['duration']) as Map<String, dynamic>;
-    final polyline = <GeoPoint>[];
-    for (final step in leg['steps'] as List) {
-      final encoded = (step as Map<String, dynamic>)['polyline']['points'] as String;
-      polyline.addAll(decodePolyline(encoded));
+  /// Walks the route forward, re-quoting each leg for the time the operator is
+  /// predicted to actually start driving it: the previous arrival plus that
+  /// stop's on-site allowance.
+  Future<List<RouteLeg>> _repriceLegs(
+    List<RouteLeg> legs,
+    List<int> waypointOrder,
+    List<Duration> dwellTimes,
+    DateTime start,
+  ) async {
+    final repriced = <RouteLeg>[];
+    var cursor = start;
+    for (var i = 0; i < legs.length; i++) {
+      final leg = legs[i];
+      final priced = i == 0 ? leg : await _singleLeg(leg, cursor);
+      repriced.add(priced);
+      final destinationIndex = i < waypointOrder.length ? waypointOrder[i] : -1;
+      final dwell = destinationIndex >= 0 && destinationIndex < dwellTimes.length
+          ? dwellTimes[destinationIndex]
+          : defaultDwellTime;
+      cursor = cursor.add(priced.duration).add(dwell);
     }
+    return repriced;
+  }
+
+  Future<RouteLeg> _singleLeg(RouteLeg leg, DateTime departure) async {
+    try {
+      final route = await _computeRoute(
+        origin: leg.origin,
+        destination: leg.destination,
+        intermediates: const [],
+        departure: departure,
+      );
+      return _parseLeg((route['legs'] as List).first as Map<String, dynamic>, departure);
+    } on DirectionsException {
+      // Keep the estimate from the planning request rather than failing the
+      // whole mission plan.
+      return leg;
+    }
+  }
+
+  Future<Map<String, dynamic>> _computeRoute({
+    required GeoPoint origin,
+    required GeoPoint destination,
+    required List<GeoPoint> intermediates,
+    required DateTime departure,
+  }) async {
+    final optimizing = intermediates.isNotEmpty;
+    final body = {
+      'origin': _waypoint(origin),
+      'destination': _waypoint(destination),
+      if (optimizing) 'intermediates': [for (final point in intermediates) _waypoint(point)],
+      'travelMode': 'DRIVE',
+      // TRAFFIC_AWARE_OPTIMAL is the most accurate traffic model but the API
+      // rejects it together with waypoint optimization.
+      'routingPreference': optimizing ? 'TRAFFIC_AWARE' : 'TRAFFIC_AWARE_OPTIMAL',
+      if (optimizing) 'optimizeWaypointOrder': true,
+      'departureTime': _departureParam(departure),
+    };
+
+    final response = await _client.post(
+      endpoint,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': _fieldMask,
+      },
+      body: jsonEncode(body),
+    );
+    if (response.statusCode != 200) {
+      throw DirectionsException(
+        'Routes API returned HTTP ${response.statusCode}: ${response.body}',
+      );
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final routes = decoded['routes'] as List? ?? const [];
+    if (routes.isEmpty) throw DirectionsException('Routes API returned no route');
+    return routes.first as Map<String, dynamic>;
+  }
+
+  Map<String, dynamic> _waypoint(GeoPoint point) => {
+        'location': {
+          'latLng': {'latitude': point.latitude, 'longitude': point.longitude},
+        },
+      };
+
+  /// Traffic-aware routing requires a departure time in the future; a plan made
+  /// for a moment that has already passed falls back to now.
+  String _departureParam(DateTime departure) {
+    final now = _now();
+    final effective = departure.isAfter(now) ? departure : now.add(const Duration(seconds: 30));
+    return effective.toUtc().toIso8601String();
+  }
+
+  RouteLeg _parseLeg(Map<String, dynamic> leg, DateTime departure) {
+    final origin = _point(leg['startLocation'] as Map<String, dynamic>);
+    final destination = _point(leg['endLocation'] as Map<String, dynamic>);
+    final encoded = (leg['polyline'] as Map<String, dynamic>?)?['encodedPolyline'] as String?;
+    final polyline = encoded == null ? <GeoPoint>[] : decodePolyline(encoded);
     return RouteLeg(
-      origin: GeoPoint((start['lat'] as num).toDouble(), (start['lng'] as num).toDouble()),
-      destination: GeoPoint((end['lat'] as num).toDouble(), (end['lng'] as num).toDouble()),
-      distanceMeters: ((leg['distance'] as Map<String, dynamic>)['value'] as num).toDouble(),
-      duration: Duration(seconds: (duration['value'] as num).round()),
-      polyline: polyline.isEmpty
-          ? [
-              GeoPoint((start['lat'] as num).toDouble(), (start['lng'] as num).toDouble()),
-              GeoPoint((end['lat'] as num).toDouble(), (end['lng'] as num).toDouble()),
-            ]
-          : polyline,
+      origin: origin,
+      destination: destination,
+      distanceMeters: ((leg['distanceMeters'] as num?) ?? 0).toDouble(),
+      duration: _duration(leg['duration']),
+      // staticDuration is the same route without live/predicted traffic.
+      freeFlowDuration: _duration(leg['staticDuration'] ?? leg['duration']),
+      departureTime: departure,
+      polyline: polyline.isEmpty ? [origin, destination] : polyline,
     );
   }
 
-  String _format(GeoPoint point) => '${point.latitude},${point.longitude}';
+  GeoPoint _point(Map<String, dynamic> location) {
+    final latLng = location['latLng'] as Map<String, dynamic>;
+    return GeoPoint(
+      (latLng['latitude'] as num).toDouble(),
+      (latLng['longitude'] as num).toDouble(),
+    );
+  }
+
+  /// Durations arrive as protobuf strings such as `"1832s"`.
+  Duration _duration(Object? value) {
+    if (value is! String) return Duration.zero;
+    final seconds = double.tryParse(value.replaceAll('s', '')) ?? 0;
+    return Duration(seconds: seconds.round());
+  }
 }
 
 class DirectionsException implements Exception {

@@ -1,16 +1,20 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/geo.dart';
 import '../models/mission.dart';
 import '../services/mission_engine.dart';
+import '../services/places_service.dart';
 import 'formatting.dart';
 
 /// Mission operator tools: add, move, retime or drop any destination after
 /// Point A. Every edit re-optimizes the remaining route immediately.
 class MissionControlPanel extends StatelessWidget {
-  const MissionControlPanel({super.key, required this.engine});
+  const MissionControlPanel({super.key, required this.engine, required this.places});
 
   final MissionEngine engine;
+  final PlacesService places;
 
   @override
   Widget build(BuildContext context) {
@@ -22,7 +26,7 @@ class MissionControlPanel extends StatelessWidget {
           color: theme.colorScheme.secondaryContainer,
           child: const Padding(
             padding: EdgeInsets.all(12),
-            child: Text('Tap the map to drop a new destination. '
+            child: Text('Search for a place or tap the map to drop a destination. '
                 'Point A is fixed; the visiting order for the rest is optimized automatically.'),
           ),
         ),
@@ -30,14 +34,14 @@ class MissionControlPanel extends StatelessWidget {
         ListTile(
           leading: const CircleAvatar(child: Text('A')),
           title: Text(engine.startingPoint.label),
-          subtitle: Text('${engine.startingPoint.location} · starting point'),
+          subtitle: Text(engine.startingPoint.address ?? '${engine.startingPoint.location}'),
         ),
         const Divider(),
         for (final point in engine.destinations)
-          _DestinationTile(engine: engine, point: point),
+          _DestinationTile(engine: engine, places: places, point: point),
         const SizedBox(height: 12),
         OutlinedButton.icon(
-          onPressed: () => _openEditor(context, engine, null),
+          onPressed: () => _openEditor(context, engine, places, null),
           icon: const Icon(Icons.add_location_alt),
           label: const Text('Add destination'),
         ),
@@ -47,9 +51,10 @@ class MissionControlPanel extends StatelessWidget {
 }
 
 class _DestinationTile extends StatelessWidget {
-  const _DestinationTile({required this.engine, required this.point});
+  const _DestinationTile({required this.engine, required this.places, required this.point});
 
   final MissionEngine engine;
+  final PlacesService places;
   final MissionPoint point;
 
   @override
@@ -62,14 +67,15 @@ class _DestinationTile extends StatelessWidget {
         child: Text(sequence >= 0 ? '${sequence + 1}' : '✓'),
       ),
       title: Text(point.label),
-      subtitle: Text('${point.location} · ${formatDuration(point.dwellTime)} on site'),
+      subtitle: Text('${point.address ?? point.location} · '
+          '${formatDuration(point.dwellTime)} on site'),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           IconButton(
             tooltip: locked ? 'Stop is in progress or done' : 'Edit',
             icon: const Icon(Icons.edit),
-            onPressed: locked ? null : () => _openEditor(context, engine, point),
+            onPressed: locked ? null : () => _openEditor(context, engine, places, point),
           ),
           IconButton(
             tooltip: locked ? 'Stop is in progress or done' : 'Remove',
@@ -82,10 +88,19 @@ class _DestinationTile extends StatelessWidget {
   }
 }
 
-Future<void> _openEditor(BuildContext context, MissionEngine engine, MissionPoint? point) async {
+Future<void> _openEditor(
+  BuildContext context,
+  MissionEngine engine,
+  PlacesService places,
+  MissionPoint? point,
+) async {
   final result = await showDialog<_EditorResult>(
     context: context,
-    builder: (context) => _DestinationEditor(point: point, fallback: engine.startingPoint.location),
+    builder: (context) => _DestinationEditor(
+      point: point,
+      places: places,
+      near: engine.operatorPosition ?? engine.startingPoint.location,
+    ),
   );
   if (result == null) return;
   if (point == null) {
@@ -93,6 +108,7 @@ Future<void> _openEditor(BuildContext context, MissionEngine engine, MissionPoin
       id: 'p${DateTime.now().microsecondsSinceEpoch}',
       label: result.label,
       location: result.location,
+      address: result.address,
       dwellTime: result.dwellTime,
     ));
   } else {
@@ -100,24 +116,27 @@ Future<void> _openEditor(BuildContext context, MissionEngine engine, MissionPoin
       point.id,
       label: result.label,
       location: result.location,
+      address: result.address,
       dwellTime: result.dwellTime,
     );
   }
 }
 
 class _EditorResult {
-  const _EditorResult(this.label, this.location, this.dwellTime);
+  const _EditorResult(this.label, this.location, this.address, this.dwellTime);
 
   final String label;
   final GeoPoint location;
+  final String? address;
   final Duration dwellTime;
 }
 
 class _DestinationEditor extends StatefulWidget {
-  const _DestinationEditor({required this.point, required this.fallback});
+  const _DestinationEditor({required this.point, required this.places, required this.near});
 
   final MissionPoint? point;
-  final GeoPoint fallback;
+  final PlacesService places;
+  final GeoPoint near;
 
   @override
   State<_DestinationEditor> createState() => _DestinationEditorState();
@@ -125,54 +144,140 @@ class _DestinationEditor extends StatefulWidget {
 
 class _DestinationEditorState extends State<_DestinationEditor> {
   final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _search = TextEditingController();
   late final TextEditingController _label =
       TextEditingController(text: widget.point?.label ?? 'New destination');
-  late final TextEditingController _lat = TextEditingController(
-      text: (widget.point?.location ?? widget.fallback).latitude.toStringAsFixed(5));
-  late final TextEditingController _lng = TextEditingController(
-      text: (widget.point?.location ?? widget.fallback).longitude.toStringAsFixed(5));
   late final TextEditingController _dwell = TextEditingController(
       text: '${(widget.point?.dwellTime ?? defaultDwellTime).inMinutes}');
 
+  Timer? _debounce;
+  List<PlaceSuggestion> _suggestions = const [];
+  bool _searching = false;
+  String? _searchError;
+  late GeoPoint _location = widget.point?.location ?? widget.near;
+  late String? _address = widget.point?.address;
+
   @override
   void dispose() {
+    _debounce?.cancel();
+    _search.dispose();
     _label.dispose();
-    _lat.dispose();
-    _lng.dispose();
     _dwell.dispose();
     super.dispose();
   }
 
+  void _onQueryChanged(String query) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 350), () => _runSearch(query));
+  }
+
+  Future<void> _runSearch(String query) async {
+    if (query.trim().isEmpty) {
+      setState(() => _suggestions = const []);
+      return;
+    }
+    setState(() {
+      _searching = true;
+      _searchError = null;
+    });
+    try {
+      final results = await widget.places.search(query, near: widget.near);
+      if (mounted) setState(() => _suggestions = results);
+    } catch (error) {
+      if (mounted) setState(() => _searchError = '$error');
+    } finally {
+      if (mounted) setState(() => _searching = false);
+    }
+  }
+
+  Future<void> _select(PlaceSuggestion suggestion) async {
+    try {
+      final place = await widget.places.resolve(suggestion);
+      if (place == null || !mounted) return;
+      setState(() {
+        _location = place.location;
+        _address = place.address;
+        _label.text = place.name;
+        _suggestions = const [];
+        _search.text = place.name;
+      });
+    } catch (error) {
+      if (mounted) setState(() => _searchError = '$error');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return AlertDialog(
       title: Text(widget.point == null ? 'Add destination' : 'Edit ${widget.point!.label}'),
-      content: Form(
-        key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextFormField(
-              controller: _label,
-              decoration: const InputDecoration(labelText: 'Label'),
-              validator: (value) => (value ?? '').trim().isEmpty ? 'Required' : null,
-            ),
-            TextFormField(
-              controller: _lat,
-              decoration: const InputDecoration(labelText: 'Latitude'),
-              validator: (value) => _validateRange(value, -90, 90),
-            ),
-            TextFormField(
-              controller: _lng,
-              decoration: const InputDecoration(labelText: 'Longitude'),
-              validator: (value) => _validateRange(value, -180, 180),
-            ),
-            TextFormField(
-              controller: _dwell,
-              decoration: const InputDecoration(labelText: 'On-site minutes'),
-              validator: (value) => _validateRange(value, 0, 600),
-            ),
-          ],
+      content: SizedBox(
+        width: 420,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: _search,
+                autofocus: true,
+                decoration: InputDecoration(
+                  labelText: 'Search a place or address',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _searching
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: SizedBox(
+                              width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                        )
+                      : null,
+                ),
+                onChanged: _onQueryChanged,
+              ),
+              if (_searchError != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(_searchError!, style: TextStyle(color: theme.colorScheme.error)),
+                ),
+              if (_suggestions.isNotEmpty)
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 200),
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final suggestion in _suggestions)
+                        ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.place_outlined),
+                          title: Text(suggestion.title),
+                          subtitle:
+                              suggestion.subtitle.isEmpty ? null : Text(suggestion.subtitle),
+                          onTap: () => _select(suggestion),
+                        ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _label,
+                decoration: const InputDecoration(labelText: 'Label'),
+                validator: (value) => (value ?? '').trim().isEmpty ? 'Required' : null,
+              ),
+              const SizedBox(height: 8),
+              Text(_address ?? 'Coordinates: $_location', style: theme.textTheme.bodySmall),
+              TextFormField(
+                controller: _dwell,
+                decoration: const InputDecoration(labelText: 'On-site minutes'),
+                validator: (value) {
+                  final parsed = int.tryParse(value ?? '');
+                  if (parsed == null) return 'Enter a whole number of minutes';
+                  if (parsed < 0 || parsed > 600) return 'Must be between 0 and 600';
+                  return null;
+                },
+              ),
+            ],
+          ),
         ),
       ),
       actions: [
@@ -184,7 +289,8 @@ class _DestinationEditorState extends State<_DestinationEditor> {
               context,
               _EditorResult(
                 _label.text.trim(),
-                GeoPoint(double.parse(_lat.text), double.parse(_lng.text)),
+                _location,
+                _address,
                 Duration(minutes: int.parse(_dwell.text)),
               ),
             );
@@ -193,12 +299,5 @@ class _DestinationEditorState extends State<_DestinationEditor> {
         ),
       ],
     );
-  }
-
-  String? _validateRange(String? value, double min, double max) {
-    final parsed = double.tryParse(value ?? '');
-    if (parsed == null) return 'Enter a number';
-    if (parsed < min || parsed > max) return 'Must be between $min and $max';
-    return null;
   }
 }
