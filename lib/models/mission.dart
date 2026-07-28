@@ -15,6 +15,7 @@ class MissionProof {
     this.fileUrl,
     this.note,
     this.location,
+    this.accuracyMeters,
     DateTime? capturedAt,
   }) : capturedAt = capturedAt ?? DateTime.now();
 
@@ -29,6 +30,9 @@ class MissionProof {
 
   /// Where the proof was captured.
   final GeoPoint? location;
+
+  /// GPS accuracy at the time of capture, in meters.
+  final double? accuracyMeters;
 
   final DateTime capturedAt;
 }
@@ -108,21 +112,6 @@ class MissionPoint {
         checkedInAt: checkedInAt,
         proofs: List.of(proofs),
       );
-}
-
-/// Legacy data class kept for route_optimization_service compatibility.
-class RouteStop {
-  final String id;
-  final double latitude;
-  final double longitude;
-  final int priority;
-
-  RouteStop({
-    required this.id,
-    required this.latitude,
-    required this.longitude,
-    required this.priority,
-  });
 }
 
 /// One optimized leg between two consecutive stops.

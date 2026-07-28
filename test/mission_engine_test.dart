@@ -213,6 +213,9 @@ void main() {
     final first = engine.currentStop!;
 
     await location.emit(first.location, clock.now());
+    await engine.checkIn();
+    await engine.uploadPhoto('test.jpg');
+    await engine.addNote('delivered');
     clock.advance(defaultDwellTime);
     await location.emit(first.location, clock.now());
     await Future<void>.delayed(Duration.zero);
@@ -229,6 +232,9 @@ void main() {
     final first = engine.currentStop!;
 
     await location.emit(first.location, clock.now());
+    await engine.checkIn();
+    await engine.uploadPhoto('test.jpg');
+    await engine.addNote('delivered');
     clock.advance(const Duration(minutes: 3));
     await engine.completeCurrentStop();
 
@@ -341,6 +347,9 @@ void main() {
     await engine.start();
 
     await location.emit(pointB, clock.now());
+    await engine.checkIn();
+    await engine.uploadPhoto('test.jpg');
+    await engine.addNote('delivered');
     await engine.completeCurrentStop();
 
     expect(engine.status, MissionStatus.completed);

@@ -9,36 +9,26 @@ import 'services/mission_engine.dart';
 import 'services/places_service.dart';
 import 'ui/mission_screen.dart';
 
-/// Set to a Google Maps API key (e.g. `--dart-define=GOOGLE_MAPS_API_KEY=...`)
-/// to route with the real, traffic-aware Directions API and search real places
-/// instead of using the offline mocks.
+/// Google Maps API key for routing and places.
+/// Set via: `--dart-define=GOOGLE_MAPS_API_KEY=...`
 const String googleMapsApiKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
 
-/// Track the real device with the platform geolocation API instead of the
-/// simulated operator: `--dart-define=USE_DEVICE_LOCATION=true`.
+/// Use real device GPS instead of simulated operator.
+/// Set via: `--dart-define=USE_DEVICE_LOCATION=true`.
 const bool useDeviceLocation = bool.fromEnvironment('USE_DEVICE_LOCATION');
 
-/// Which routing backend to use: `google`, `osrm` or `mock`. Defaults to
-/// Google when a key is configured and to OSRM otherwise — OSRM routes on real
-/// OpenStreetMap roads with no key and no quota, but has no traffic data, so
-/// rush hour comes from the app's own [TrafficProfile].
+/// Routing backend: `google`, `osrm`, or `mock`.
+/// Auto-selects Google when a key is present, otherwise OSRM.
+/// Set via: `--dart-define=ROUTING_BACKEND=...`
 const String routingBackend = String.fromEnvironment('ROUTING_BACKEND');
 
-bool get useGoogleApis => googleMapsApiKey.isNotEmpty;
+bool get _useGoogleApis => googleMapsApiKey.isNotEmpty;
 
-String get activeBackend => routingBackend.isNotEmpty
+String get _activeBackend => routingBackend.isNotEmpty
     ? routingBackend
-    : useGoogleApis
+    : _useGoogleApis
         ? 'google'
         : 'osrm';
-
-DirectionsService buildDirectionsService() {
-  return switch (activeBackend) {
-    'google' => GoogleDirectionsService(apiKey: googleMapsApiKey),
-    'osrm' => OsrmDirectionsService(),
-    _ => MockDirectionsService(),
-  };
-}
 
 void main() {
   runApp(const MissionRouterApp());
@@ -57,15 +47,15 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
   late final MissionEngine _engine;
   late final PlacesService _places;
 
-  /// Real dispatch sites in Kota Kinabalu; Point A is the depot the operator
-  /// starts from.
-  static final MissionPoint _startingPoint = MissionPoint(
+  /// Real dispatch sites in Kota Kinabalu; Point A is the depot.
+  static final _startingPoint = MissionPoint(
     id: 'a',
     label: 'Asia City',
     address: 'Asia City, 88000 Kota Kinabalu, Sabah, Malaysia',
     location: const GeoPoint(5.977123, 116.072573),
   );
-  static final List<MissionPoint> _destinations = [
+
+  static final _destinations = [
     MissionPoint(
       id: 'b',
       label: 'City Mall',
@@ -89,8 +79,6 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
   @override
   void initState() {
     super.initState();
-    // Real GPS moves in real time; the simulated operator can be sped up so a
-    // 15 minute on-site allowance plays out in 15 seconds.
     _clock = ScaledClock(timeScale: useDeviceLocation ? 1 : 60);
     _location = useDeviceLocation
         ? GeolocatorLocationService()
@@ -98,18 +86,11 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
             initialPosition: _startingPoint.location,
             clock: _clock,
           );
-    // Without a Google key, places still come from OpenStreetMap rather than
-    // the built-in gazetteer, so any real address can be searched offline of
-    // Google.
-    _places = useGoogleApis
-        ? GooglePlacesService(apiKey: googleMapsApiKey)
-        : activeBackend == 'mock'
-            ? const MockPlacesService()
-            : NominatimPlacesService();
+    _places = _buildPlacesService();
     _engine = MissionEngine(
       startingPoint: _startingPoint,
       destinations: _destinations,
-      directionsService: buildDirectionsService(),
+      directionsService: _buildDirectionsService(),
       locationService: _location,
       clock: _clock,
       missionId: 'm001',
@@ -147,13 +128,29 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
       home: MissionScreen(
         engine: _engine,
         places: _places,
-        dataSource: switch (activeBackend) {
+        dataSource: switch (_activeBackend) {
           'google' => 'Google APIs',
           'osrm' => 'OSRM + OSM',
           _ => 'Mock data',
         },
-        liveApis: activeBackend != 'mock',
+        liveApis: _activeBackend != 'mock',
       ),
     );
+  }
+
+  DirectionsService _buildDirectionsService() {
+    return switch (_activeBackend) {
+      'google' => GoogleDirectionsService(apiKey: googleMapsApiKey),
+      'osrm' => OsrmDirectionsService(),
+      _ => MockDirectionsService(),
+    };
+  }
+
+  PlacesService _buildPlacesService() {
+    return switch (_activeBackend) {
+      'google' when _useGoogleApis => GooglePlacesService(apiKey: googleMapsApiKey),
+      'mock' => const MockPlacesService(),
+      _ => NominatimPlacesService(),
+    };
   }
 }

@@ -154,11 +154,11 @@ void main() {
     test('searches the offline gazetteer of real sites', () async {
       const service = MockPlacesService();
 
-      final suggestions = await service.search('changi');
+      final suggestions = await service.search('mall');
 
       expect(suggestions, isNotEmpty);
       final place = await service.resolve(suggestions.first);
-      expect(place!.location.latitude, closeTo(1.36, 0.2));
+      expect(place!.location.latitude, closeTo(5.97, 0.2));
     });
   });
 }

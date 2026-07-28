@@ -1,15 +1,12 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
-import '../models/geo.dart';
 import '../models/mission.dart';
 import '../services/mission_engine.dart';
 import '../services/places_service.dart';
+import 'destination_editor.dart';
 import 'formatting.dart';
+import 'proof_dialog.dart';
 
-/// Mission operator tools: add, re-prioritize, retime or drop any destination
-/// after Point A. Every edit re-plans the remaining route immediately.
 class MissionControlPanel extends StatefulWidget {
   const MissionControlPanel({super.key, required this.engine, required this.places});
 
@@ -30,105 +27,10 @@ class _MissionControlPanelState extends State<MissionControlPanel> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Mission finalized notification + actions
         if (engine.isMissionFinalized)
-          Card(
-            color: engine.isMissionVerified
-                ? Colors.green.withValues(alpha: 0.1)
-                : Colors.purple.withValues(alpha: 0.1),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        engine.isMissionVerified ? Icons.verified : Icons.notifications_active,
-                        color: engine.isMissionVerified ? Colors.green : Colors.purple,
-                        size: 32,
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              engine.isMissionVerified ? 'Mission Verified' : 'Mission Completed',
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                color: engine.isMissionVerified
-                                    ? Colors.green.shade700
-                                    : Colors.purple.shade700,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            Text(
-                              engine.isMissionVerified
-                                  ? 'Verified at ${formatClockTime(engine.missionVerifiedAt!)}'
-                                  : 'Operator finalized at ${formatClockTime(engine.missionCompletedAt!)}',
-                              style: theme.textTheme.bodySmall,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      if (!engine.isMissionVerified)
-                        FilledButton.icon(
-                          onPressed: () => _verifyMission(context),
-                          icon: const Icon(Icons.verified),
-                          label: const Text('Verify Mission'),
-                          style: FilledButton.styleFrom(backgroundColor: Colors.green),
-                        ),
-                      if (engine.isMissionVerified)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8),
-                          child: Chip(
-                            avatar: const Icon(Icons.check_circle, size: 18, color: Colors.green),
-                            label: const Text('Verified'),
-                            backgroundColor: Colors.green.withValues(alpha: 0.1),
-                          ),
-                        ),
-                      const SizedBox(width: 8),
-                      OutlinedButton.icon(
-                        onPressed: () => _contactOperator(context),
-                        icon: const Icon(Icons.phone),
-                        label: const Text('Contact Operator'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        // Mission metadata card
+          _MissionFinalizedCard(engine: engine),
         if (engine.title.isNotEmpty || engine.missionNumber.isNotEmpty)
-          Card(
-            color: theme.colorScheme.tertiaryContainer,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (engine.title.isNotEmpty)
-                    Text(engine.title, style: theme.textTheme.titleMedium),
-                  if (engine.missionNumber.isNotEmpty)
-                    Text('Mission #${engine.missionNumber}',
-                        style: theme.textTheme.bodySmall),
-                  if (engine.instructions != null &&
-                      engine.instructions!.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Text(engine.instructions!,
-                        style: theme.textTheme.bodySmall),
-                  ],
-                ],
-              ),
-            ),
-          ),
-        // Instruction card — hidden when finalized (read-only)
+          _MissionMetadataCard(engine: engine, theme: theme),
         if (!engine.isMissionFinalized)
           Card(
             color: theme.colorScheme.secondaryContainer,
@@ -141,7 +43,6 @@ class _MissionControlPanelState extends State<MissionControlPanel> {
                       'the rest are served in this order, so a new customer queues last.'),
             ),
           ),
-        // Optimize switch — disabled when finalized
         SwitchListTile(
           title: const Text('Optimize visiting order'),
           subtitle: Text(engine.optimizeOrder
@@ -159,7 +60,6 @@ class _MissionControlPanelState extends State<MissionControlPanel> {
         const Divider(),
         for (final point in engine.destinations)
           _DestinationTile(engine: engine, places: places, point: point),
-        // Add destination — hidden when finalized
         if (!engine.isMissionFinalized) ...[
           const SizedBox(height: 12),
           OutlinedButton.icon(
@@ -172,79 +72,94 @@ class _MissionControlPanelState extends State<MissionControlPanel> {
     );
   }
 
-  void _verifyMission(BuildContext context) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Verify Mission?'),
-        content: const Text(
-          'Confirm that all proof has been reviewed and the mission is verified as complete.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: FilledButton.styleFrom(backgroundColor: Colors.green),
-            child: const Text('Verify'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true) {
-      engine.verifyMission();
-    }
-  }
+}
 
-  void _contactOperator(BuildContext context) async {
-    final method = await showDialog<String>(
-      context: context,
-      builder: (context) => SimpleDialog(
-        title: const Text('Contact Operator'),
-        children: [
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(context, 'call'),
-            child: const Row(
+class _MissionFinalizedCard extends StatelessWidget {
+  const _MissionFinalizedCard({required this.engine});
+
+  final MissionEngine engine;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      color: engine.isMissionVerified
+          ? Colors.green.withValues(alpha: 0.1)
+          : Colors.purple.withValues(alpha: 0.1),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Icon(Icons.phone, size: 20),
-                SizedBox(width: 12),
-                Text('Call operator'),
+                Icon(
+                  engine.isMissionVerified ? Icons.verified : Icons.notifications_active,
+                  color: engine.isMissionVerified ? Colors.green : Colors.purple,
+                  size: 32,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        engine.isMissionVerified ? 'Mission Verified' : 'Mission Completed',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: engine.isMissionVerified
+                              ? Colors.green.shade700
+                              : Colors.purple.shade700,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        engine.isMissionVerified
+                            ? 'Verified at ${formatClockTime(engine.missionVerifiedAt!)}'
+                            : 'Operator finalized at ${formatClockTime(engine.missionCompletedAt!)}',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
-          ),
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(context, 'message'),
-            child: const Row(
-              children: [
-                Icon(Icons.message, size: 20),
-                SizedBox(width: 12),
-                Text('Send message'),
-              ],
-            ),
-          ),
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(context, 'email'),
-            child: const Row(
-              children: [
-                Icon(Icons.email, size: 20),
-                SizedBox(width: 12),
-                Text('Send email'),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
-    if (method != null && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Operator contacted via $method'),
-          duration: const Duration(seconds: 2),
+  }
+}
+
+class _MissionMetadataCard extends StatelessWidget {
+  const _MissionMetadataCard({required this.engine, required this.theme});
+
+  final MissionEngine engine;
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: theme.colorScheme.tertiaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (engine.title.isNotEmpty)
+              Text(engine.title, style: theme.textTheme.titleMedium),
+            if (engine.missionNumber.isNotEmpty)
+              Text('Mission #${engine.missionNumber}',
+                  style: theme.textTheme.bodySmall),
+            if (engine.instructions != null &&
+                engine.instructions!.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(engine.instructions!,
+                  style: theme.textTheme.bodySmall),
+            ],
+          ],
         ),
-      );
-    }
+      ),
+    );
   }
 }
 
@@ -310,142 +225,7 @@ class _DestinationTile extends StatelessWidget {
   void _showProof(BuildContext context, MissionPoint point) {
     showDialog(
       context: context,
-      builder: (context) => _ProofDialog(point: point),
-    );
-  }
-}
-
-class _ProofDialog extends StatelessWidget {
-  const _ProofDialog({required this.point});
-
-  final MissionPoint point;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return AlertDialog(
-      title: Text('Proof — ${point.label}'),
-      content: SizedBox(
-        width: 420,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Stop location — show address, fall back to coordinates
-              _ProofRow(
-                icon: Icons.place,
-                label: 'Stop location',
-                value: point.address ??
-                    '${point.location.latitude.toStringAsFixed(6)}, ${point.location.longitude.toStringAsFixed(6)}',
-              ),
-              if (point.arrivedAt != null)
-                _ProofRow(
-                  icon: Icons.location_on,
-                  label: 'Arrived',
-                  value: formatClockTime(point.arrivedAt!),
-                ),
-              if (point.checkedIn)
-                _ProofRow(
-                  icon: Icons.fingerprint,
-                  label: 'Checked in',
-                  value: formatClockTime(point.checkedInAt!),
-                ),
-              if (point.completedAt != null)
-                _ProofRow(
-                  icon: Icons.check_circle,
-                  label: 'Completed',
-                  value: formatClockTime(point.completedAt!),
-                ),
-              if (point.proofs.isEmpty && !point.checkedIn)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text('No proof captured yet.',
-                      style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
-                ),
-              for (final proof in point.proofs) ...[
-                const Divider(),
-                switch (proof.type) {
-                  ProofType.checkin => _ProofRow(
-                      icon: Icons.fingerprint,
-                      label: 'Check-in',
-                      value: formatClockTime(proof.capturedAt),
-                    ),
-                  ProofType.photo => Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _ProofRow(
-                          icon: Icons.camera_alt,
-                          label: 'Photo',
-                          value: proof.fileUrl ?? 'unknown',
-                        ),
-                        if (proof.location != null)
-                          _ProofRow(
-                            icon: Icons.gps_fixed,
-                            label: 'GPS',
-                            value:
-                                '${proof.location!.latitude.toStringAsFixed(6)}, ${proof.location!.longitude.toStringAsFixed(6)}',
-                          ),
-                      ],
-                    ),
-                  ProofType.note => Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _ProofRow(
-                          icon: Icons.note,
-                          label: 'Note',
-                          value: formatClockTime(proof.capturedAt),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '"${proof.note}"',
-                          style:
-                              theme.textTheme.bodyMedium?.copyWith(fontStyle: FontStyle.italic),
-                        ),
-                        if (proof.location != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: _ProofRow(
-                              icon: Icons.gps_fixed,
-                              label: 'GPS',
-                              value:
-                                  '${proof.location!.latitude.toStringAsFixed(6)}, ${proof.location!.longitude.toStringAsFixed(6)}',
-                            ),
-                          ),
-                      ],
-                    ),
-                },
-              ],
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
-      ],
-    );
-  }
-}
-
-class _ProofRow extends StatelessWidget {
-  const _ProofRow({required this.icon, required this.label, required this.value});
-
-  final IconData icon;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: Colors.grey),
-          const SizedBox(width: 8),
-          Text('$label: ', style: const TextStyle(fontWeight: FontWeight.w500)),
-          Expanded(child: Text(value, overflow: TextOverflow.ellipsis)),
-        ],
-      ),
+      builder: (context) => ProofDialog(point: point),
     );
   }
 }
@@ -456,9 +236,9 @@ Future<void> _openEditor(
   PlacesService places,
   MissionPoint? point,
 ) async {
-  final result = await showDialog<_EditorResult>(
+  final result = await showDialog<EditorResult>(
     context: context,
-    builder: (context) => _DestinationEditor(
+    builder: (context) => DestinationEditor(
       point: point,
       places: places,
       near: engine.operatorPosition ?? engine.startingPoint.location,
@@ -480,231 +260,6 @@ Future<void> _openEditor(
       location: result.location,
       address: result.address,
       dwellTime: result.dwellTime,
-    );
-  }
-}
-
-class _EditorResult {
-  const _EditorResult(this.label, this.location, this.address, this.dwellTime);
-
-  final String label;
-  final GeoPoint location;
-  final String? address;
-  final Duration dwellTime;
-}
-
-class _DestinationEditor extends StatefulWidget {
-  const _DestinationEditor({required this.point, required this.places, required this.near});
-
-  final MissionPoint? point;
-  final PlacesService places;
-  final GeoPoint near;
-
-  @override
-  State<_DestinationEditor> createState() => _DestinationEditorState();
-}
-
-class _DestinationEditorState extends State<_DestinationEditor> {
-  final _formKey = GlobalKey<FormState>();
-  late final TextEditingController _search = TextEditingController();
-  late final TextEditingController _label =
-      TextEditingController(text: widget.point?.label ?? 'New destination');
-  late final TextEditingController _dwell = TextEditingController(
-      text: '${(widget.point?.dwellTime ?? defaultDwellTime).inMinutes}');
-
-  Timer? _debounce;
-  List<PlaceSuggestion> _suggestions = const [];
-  bool _searching = false;
-  String? _searchError;
-  String _query = '';
-  String? _searchedQuery;
-
-  /// Guards against a slow earlier request overwriting the newest results.
-  int _searchGeneration = 0;
-  late GeoPoint _location = widget.point?.location ?? widget.near;
-  late String? _address = widget.point?.address;
-
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    _search.dispose();
-    _label.dispose();
-    _dwell.dispose();
-    super.dispose();
-  }
-
-  void _onQueryChanged(String query) {
-    setState(() => _query = query);
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 350), () => _runSearch(query));
-  }
-
-  Future<void> _runSearch(String query) async {
-    final generation = ++_searchGeneration;
-    if (query.trim().length < minSearchLength) {
-      setState(() {
-        _suggestions = const [];
-        _searchedQuery = null;
-        _searching = false;
-      });
-      return;
-    }
-    setState(() {
-      _searching = true;
-      _searchError = null;
-    });
-    try {
-      final results = await widget.places.search(query, near: widget.near);
-      if (mounted && generation == _searchGeneration) {
-        setState(() {
-          _suggestions = results;
-          _searchedQuery = query;
-        });
-      }
-    } catch (error) {
-      if (mounted && generation == _searchGeneration) {
-        setState(() => _searchError = _describe(error));
-      }
-    } finally {
-      if (mounted && generation == _searchGeneration) {
-        setState(() => _searching = false);
-      }
-    }
-  }
-
-  /// Google's errors are JSON blobs; the operator only needs the gist.
-  String _describe(Object error) => switch (error) {
-        PlacesException() => 'Place search is unavailable right now.',
-        _ => '$error',
-      };
-
-  /// Why the suggestion list is empty, if it is.
-  String? get _emptyStateMessage {
-    if (_searching || _suggestions.isNotEmpty || _searchError != null) return null;
-    final query = _query.trim();
-    if (query.isEmpty) return null;
-    if (query.length < minSearchLength) {
-      return 'Keep typing — at least $minSearchLength characters.';
-    }
-    return _searchedQuery == null ? null : 'No places match "$_searchedQuery".';
-  }
-
-  Future<void> _select(PlaceSuggestion suggestion) async {
-    try {
-      final place = await widget.places.resolve(suggestion);
-      if (place == null || !mounted) return;
-      _searchGeneration++;
-      setState(() {
-        _query = place.name;
-        _searchedQuery = null;
-        _location = place.location;
-        _address = place.address;
-        _label.text = place.name;
-        _suggestions = const [];
-        _search.text = place.name;
-      });
-    } catch (error) {
-      if (mounted) setState(() => _searchError = _describe(error));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return AlertDialog(
-      title: Text(widget.point == null ? 'Add destination' : 'Edit ${widget.point!.label}'),
-      content: SizedBox(
-        width: 420,
-        child: Form(
-          key: _formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: _search,
-                autofocus: true,
-                decoration: InputDecoration(
-                  labelText: 'Search a place or address',
-                  prefixIcon: const Icon(Icons.search),
-                  suffixIcon: _searching
-                      ? const Padding(
-                          padding: EdgeInsets.all(12),
-                          child: SizedBox(
-                              width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-                        )
-                      : null,
-                ),
-                onChanged: _onQueryChanged,
-              ),
-              if (_searchError != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(_searchError!, style: TextStyle(color: theme.colorScheme.error)),
-                ),
-              if (_emptyStateMessage != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(_emptyStateMessage!, style: theme.textTheme.bodySmall),
-                ),
-              if (_suggestions.isNotEmpty)
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 200),
-                  child: ListView(
-                    shrinkWrap: true,
-                    children: [
-                      for (final suggestion in _suggestions)
-                        ListTile(
-                          dense: true,
-                          leading: const Icon(Icons.place_outlined),
-                          title: Text(suggestion.title),
-                          subtitle:
-                              suggestion.subtitle.isEmpty ? null : Text(suggestion.subtitle),
-                          onTap: () => _select(suggestion),
-                        ),
-                    ],
-                  ),
-                ),
-              const SizedBox(height: 8),
-              TextFormField(
-                controller: _label,
-                decoration: const InputDecoration(labelText: 'Label'),
-                validator: (value) => (value ?? '').trim().isEmpty ? 'Required' : null,
-              ),
-              const SizedBox(height: 8),
-              Text(_address ?? 'Coordinates: $_location', style: theme.textTheme.bodySmall),
-              TextFormField(
-                controller: _dwell,
-                decoration: const InputDecoration(labelText: 'On-site minutes'),
-                validator: (value) {
-                  final parsed = int.tryParse(value ?? '');
-                  if (parsed == null) return 'Enter a whole number of minutes';
-                  if (parsed < 0 || parsed > 600) return 'Must be between 0 and 600';
-                  return null;
-                },
-              ),
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-        FilledButton(
-          onPressed: () {
-            if (!(_formKey.currentState?.validate() ?? false)) return;
-            Navigator.pop(
-              context,
-              _EditorResult(
-                _label.text.trim(),
-                _location,
-                _address,
-                Duration(minutes: int.parse(_dwell.text)),
-              ),
-            );
-          },
-          child: const Text('Save'),
-        ),
-      ],
     );
   }
 }

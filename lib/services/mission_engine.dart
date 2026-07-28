@@ -198,6 +198,7 @@ class MissionEngine extends ChangeNotifier {
       id: 'pc${DateTime.now().microsecondsSinceEpoch}',
       type: ProofType.checkin,
       location: _operatorPosition,
+      accuracyMeters: _location.lastPosition?.accuracyMeters,
       capturedAt: clock.now(),
     ));
     notifyListeners();
@@ -213,6 +214,7 @@ class MissionEngine extends ChangeNotifier {
       type: ProofType.note,
       note: text.trim(),
       location: _operatorPosition,
+      accuracyMeters: _location.lastPosition?.accuracyMeters,
       capturedAt: clock.now(),
     ));
     notifyListeners();
@@ -228,6 +230,7 @@ class MissionEngine extends ChangeNotifier {
       type: ProofType.photo,
       fileUrl: fileUrl,
       location: _operatorPosition,
+      accuracyMeters: _location.lastPosition?.accuracyMeters,
       capturedAt: clock.now(),
     ));
     notifyListeners();
