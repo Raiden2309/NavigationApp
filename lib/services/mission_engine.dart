@@ -97,6 +97,24 @@ class MissionEngine extends ChangeNotifier {
   Duration _lastReoptimizeSaving = Duration.zero;
   int _reoptimizeBackoff = 1;
 
+  // --- Route deviation detection -------------------------------------------
+
+  /// Snapshot of total remaining driving time (seconds) when the route was
+  /// last planned, used to detect if a deviation makes the ETA worse.
+  int _plannedRemainingDriveTimeSeconds = 0;
+
+  /// Minimum distance (meters) from the planned route polyline before the
+  /// operator is considered to have deviated.
+  double routeDeviationThresholdMeters = 200;
+
+  /// If the ETA increase after a deviation exceeds this, notify Mission
+  /// Control.
+  Duration routeDeviationEtaThreshold = const Duration(minutes: 10);
+
+  bool _hasRouteDeviationNotification = false;
+  String? _routeDeviationMessage;
+  bool _deviationCheckInProgress = false;
+
   /// Every destination after the starting point, in the order the mission
   /// operator entered them.
   List<MissionPoint> get destinations => List.unmodifiable(_destinations);
@@ -246,6 +264,15 @@ class MissionEngine extends ChangeNotifier {
   bool get isMissionFinalized => missionCompletedAt != null;
   bool get isMissionVerified => missionVerifiedAt != null;
 
+  bool get hasRouteDeviationNotification => _hasRouteDeviationNotification;
+  String? get routeDeviationMessage => _routeDeviationMessage;
+
+  void dismissRouteDeviationNotification() {
+    _hasRouteDeviationNotification = false;
+    _routeDeviationMessage = null;
+    notifyListeners();
+  }
+
   Future<void> completeMission() async {
     if (_status != MissionStatus.completed) return;
     if (!_destinations.every((p) => p.isCompleted)) return;
@@ -270,12 +297,15 @@ class MissionEngine extends ChangeNotifier {
     notifyListeners();
   }
 
+  static const _sentinel = Object();
+
   Future<void> updateDestination(
     String id, {
     String? label,
     GeoPoint? location,
     String? address,
     Duration? dwellTime,
+    Object? priority = _sentinel,
   }) async {
     final index = _destinations.indexWhere((p) => p.id == id);
     if (index < 0) return;
@@ -285,6 +315,9 @@ class MissionEngine extends ChangeNotifier {
     existing.location = location ?? existing.location;
     existing.address = address ?? existing.address;
     existing.dwellTime = dwellTime ?? existing.dwellTime;
+    if (priority != _sentinel) {
+      existing.priority = priority as int?;
+    }
     await _replan();
     notifyListeners();
   }
@@ -371,6 +404,7 @@ class MissionEngine extends ChangeNotifier {
   void _refresh() {
     _retryPlanning();
     _reoptimizeIfDue();
+    _checkRouteDeviation();
     if (!isRunning) {
       notifyListeners();
       return;
@@ -403,6 +437,71 @@ class MissionEngine extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  /// Checks whether the operator has drifted away from the planned route
+  /// polyline. When the resulting ETA increase meets [routeDeviationEtaThreshold],
+  /// the route is auto-switched and Mission Control is notified.
+  void _checkRouteDeviation() {
+    if (!isRunning || _routeOrder.isEmpty) return;
+    if (_hasRouteDeviationNotification || _deviationCheckInProgress) return;
+    final position = _operatorPosition;
+    if (position == null) return;
+
+    final routePolyline = _plan.fullPolyline;
+    if (routePolyline.length < 2) return;
+
+    final distanceFrom = distanceFromPath(routePolyline, position);
+    if (distanceFrom > routeDeviationThresholdMeters) {
+      unawaited(_handleRouteDeviation(position));
+    }
+  }
+
+  Future<void> _handleRouteDeviation(GeoPoint position) async {
+    _deviationCheckInProgress = true;
+    final pending = _destinations.where((p) => !p.isCompleted).toList();
+    if (pending.isEmpty) {
+      _deviationCheckInProgress = false;
+      return;
+    }
+
+    try {
+      final deviationPlan = await _directions.optimizedRoute(
+        origin: position,
+        destinations: [for (final p in pending) p.location],
+        departureTime: clock.now(),
+        dwellTimes: [for (final p in pending) p.dwellTime],
+        optimizeOrder: _optimizeOrder,
+      );
+
+      final newEtaSeconds = deviationPlan.totalDrivingTime.inSeconds;
+      final plannedEtaSeconds = _plannedRemainingDriveTimeSeconds;
+      final diffSeconds = newEtaSeconds - plannedEtaSeconds;
+
+      if (diffSeconds >= routeDeviationEtaThreshold.inSeconds) {
+        // Auto-switch to the route from the operator's current position.
+        final placed = [
+          for (final index in deviationPlan.waypointOrder)
+            if (index >= 0 && index < pending.length) pending[index],
+        ];
+        _plan = deviationPlan;
+        _routeOrder = placed;
+        _recomputeLegDistances();
+        _followPlan();
+
+        final extraMinutes = (diffSeconds / 60).round();
+        _hasRouteDeviationNotification = true;
+        _routeDeviationMessage =
+            'Driver deviated from planned route. ETA increased by $extraMinutes min.';
+        _plannedRemainingDriveTimeSeconds = newEtaSeconds;
+        notifyListeners();
+      }
+    } catch (_) {
+      // Routing failure during deviation check — the existing retry logic
+      // will handle a full replan on the next tick.
+    } finally {
+      _deviationCheckInProgress = false;
+    }
   }
 
   /// A route request can fail transiently (rate limit, a dropped connection),
@@ -499,24 +598,54 @@ class MissionEngine extends ChangeNotifier {
       // Driving only resumes once the current stop's tasks are done, so that is
       // the departure time the traffic for the next leg must be priced for.
       final departure = anchored == null ? now : now.add(anchored.remainingDwell(now));
+
+      // --- Priority-aware ordering ---
+      // Priority stops (sorted by level ascending) go first; the remaining
+      // non-priority stops are optimized for efficiency.
+      final priorityStops =
+          optimizable.where((p) => p.priority != null).toList()
+            ..sort((a, b) => a.priority!.compareTo(b.priority!));
+      final nonPriorityStops = optimizable.where((p) => p.priority == null).toList();
+
+      // Optimize non-priority stops locally when the flag is on.
+      List<MissionPoint> orderedNonPriority;
+      if (nonPriorityStops.isNotEmpty && _optimizeOrder) {
+        final originForNonPriority =
+            priorityStops.isNotEmpty ? priorityStops.last.location : (anchored?.location ?? origin);
+        final points = [originForNonPriority, ...nonPriorityStops.map((p) => p.location)];
+        final optOrder = solveVisitingOrder(
+          nonPriorityStops.length,
+          (from, to) => points[from].distanceTo(points[to]),
+        );
+        orderedNonPriority = [for (final i in optOrder) nonPriorityStops[i]];
+      } else {
+        orderedNonPriority = nonPriorityStops;
+      }
+
+      final preOrdered = [...priorityStops, ...orderedNonPriority];
+
+      // When priority stops exist we already sorted the list ourselves, so
+      // tell the DirectionsService to keep our order.
+      final useOptimizeOrder = priorityStops.isEmpty && _optimizeOrder;
+
       final plan = await _directions.optimizedRoute(
         origin: anchored?.location ?? origin,
-        destinations: [for (final p in optimizable) p.location],
+        destinations: [for (final p in preOrdered) p.location],
         departureTime: departure,
-        dwellTimes: [for (final p in optimizable) p.dwellTime],
-        optimizeOrder: _optimizeOrder,
+        dwellTimes: [for (final p in preOrdered) p.dwellTime],
+        optimizeOrder: useOptimizeOrder,
       );
       // A waypoint order that is short, or holds an index the route no longer
       // has, must not drop a stop or blow up the mission: unplaced stops keep
       // their entered order at the back.
       final placed = [
         for (final index in plan.waypointOrder)
-          if (index >= 0 && index < optimizable.length) optimizable[index],
+          if (index >= 0 && index < preOrdered.length) preOrdered[index],
       ];
       final ordered = [
         ?anchored,
         ...placed,
-        for (final point in optimizable)
+        for (final point in preOrdered)
           if (!placed.contains(point)) point,
       ];
 
@@ -540,6 +669,8 @@ class MissionEngine extends ChangeNotifier {
       }
       _routeOrder = ordered;
       _recomputeLegDistances();
+      // Snapshot the planned remaining drive time for deviation detection.
+      _plannedRemainingDriveTimeSeconds = _plan.totalDrivingTime.inSeconds;
       for (final point in _routeOrder.skip(1)) {
         if (point.status == MissionPointStatus.enRoute) {
           point.status = MissionPointStatus.pending;

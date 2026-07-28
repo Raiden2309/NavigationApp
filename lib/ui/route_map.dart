@@ -209,6 +209,31 @@ class RouteMap extends StatelessWidget {
               ),
             ),
 
+          // Priority Badge
+          if (point.priority != null)
+            Positioned(
+              top: 10,
+              left: 12,
+              child: Container(
+                width: 18,
+                height: 18,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.amber.shade700,
+                ),
+                child: Center(
+                  child: Text(
+                    '${point.priority}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
           // Label Text below pin
           Positioned(
             bottom: 2,

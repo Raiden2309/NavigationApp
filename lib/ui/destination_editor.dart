@@ -202,6 +202,7 @@ class DestinationEditorState extends State<DestinationEditor> {
                   return null;
                 },
               ),
+              const SizedBox(height: 8),
             ],
           ),
         ),

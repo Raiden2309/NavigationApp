@@ -47,6 +47,7 @@ class MissionPoint {
     this.address,
     this.dwellTime = defaultDwellTime,
     this.status = MissionPointStatus.pending,
+    this.priority,
     this.arrivedAt,
     this.completedAt,
     this.checkedInAt,
@@ -61,6 +62,11 @@ class MissionPoint {
   String? address;
 
   Duration dwellTime;
+
+  /// Optional priority level: 1 = highest, 2 = medium, 3 = low.
+  /// When set, this stop is visited before all non-priority stops, in level
+  /// order. When null, the stop is optimized for efficiency.
+  int? priority;
   MissionPointStatus status;
   DateTime? arrivedAt;
   DateTime? completedAt;
@@ -99,6 +105,7 @@ class MissionPoint {
     GeoPoint? location,
     String? address,
     Duration? dwellTime,
+    int? priority,
   }) =>
       MissionPoint(
         id: id,
@@ -107,6 +114,7 @@ class MissionPoint {
         address: address ?? this.address,
         dwellTime: dwellTime ?? this.dwellTime,
         status: status,
+        priority: priority ?? this.priority,
         arrivedAt: arrivedAt,
         completedAt: completedAt,
         checkedInAt: checkedInAt,

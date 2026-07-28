@@ -29,6 +29,8 @@ class _MissionControlPanelState extends State<MissionControlPanel> {
       children: [
         if (engine.isMissionFinalized)
           _MissionFinalizedCard(engine: engine),
+        if (engine.hasRouteDeviationNotification)
+          _DeviationNotificationCard(engine: engine),
         if (engine.title.isNotEmpty || engine.missionNumber.isNotEmpty)
           _MissionMetadataCard(engine: engine, theme: theme),
         if (!engine.isMissionFinalized)
@@ -79,6 +81,28 @@ class _MissionFinalizedCard extends StatelessWidget {
 
   final MissionEngine engine;
 
+  void _confirmVerifyMission(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Verify Mission?'),
+        content: const Text(
+            'Review all proof and confirm this mission is complete.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Verify')),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      engine.verifyMission();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -122,6 +146,52 @@ class _MissionFinalizedCard extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+            if (!engine.isMissionVerified) ...[
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => _confirmVerifyMission(context),
+                icon: const Icon(Icons.verified),
+                label: const Text('Verify Mission'),
+                style: FilledButton.styleFrom(backgroundColor: Colors.green),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DeviationNotificationCard extends StatelessWidget {
+  const _DeviationNotificationCard({required this.engine});
+
+  final MissionEngine engine;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      color: Colors.amber.withValues(alpha: 0.15),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 28),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                engine.routeDeviationMessage ?? 'Driver has deviated from the planned route.',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: Colors.amber.shade900,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Dismiss',
+              icon: const Icon(Icons.close),
+              onPressed: () => engine.dismissRouteDeviationNotification(),
             ),
           ],
         ),
@@ -181,7 +251,23 @@ class _DestinationTile extends StatelessWidget {
         backgroundColor: point.isCompleted ? Colors.grey : null,
         child: Text(sequence >= 0 ? '${sequence + 1}' : '✓'),
       ),
-      title: Text(point.label),
+      title: Row(
+        children: [
+          Expanded(child: Text(point.label)),
+          if (point.priority != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'P${point.priority}',
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amber),
+              ),
+            ),
+        ],
+      ),
       subtitle: Text('${point.address ?? point.location} · '
           '${formatDuration(point.dwellTime)} on site'),
       trailing: Row(
@@ -193,33 +279,65 @@ class _DestinationTile extends StatelessWidget {
               icon: const Icon(Icons.visibility),
               onPressed: () => _showProof(context, point),
             ),
-          if (!readOnly && !engine.optimizeOrder) ...[
-            IconButton(
-              tooltip: 'Higher priority',
-              icon: const Icon(Icons.arrow_upward),
-              onPressed: locked ? null : () => engine.moveDestination(point.id, -1),
+          if (!readOnly)
+            PopupMenuButton<String>(
+              tooltip: locked ? 'Stop is in progress or done' : 'Options',
+              icon: const Icon(Icons.more_vert),
+              enabled: !locked,
+              onSelected: (value) => _onMenuSelected(context, value),
+              itemBuilder: (context) => [
+                const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                const PopupMenuItem(value: 'remove', child: Text('Remove')),
+                const PopupMenuDivider(),
+                PopupMenuItem<String>(
+                  value: 'priority',
+                  enabled: false,
+                  child: Text(
+                    'Priority',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+                _priorityMenuItem(1, '1 — Highest'),
+                _priorityMenuItem(2, '2 — Medium'),
+                _priorityMenuItem(3, '3 — Low'),
+                _priorityMenuItem(null, 'None (optimized)'),
+              ],
             ),
-            IconButton(
-              tooltip: 'Lower priority',
-              icon: const Icon(Icons.arrow_downward),
-              onPressed: locked ? null : () => engine.moveDestination(point.id, 1),
-            ),
-          ],
-          if (!readOnly) ...[
-            IconButton(
-              tooltip: locked ? 'Stop is in progress or done' : 'Edit',
-              icon: const Icon(Icons.edit),
-              onPressed: locked ? null : () => _openEditor(context, engine, places, point),
-            ),
-            IconButton(
-              tooltip: locked ? 'Stop is in progress or done' : 'Remove',
-              icon: const Icon(Icons.delete_outline),
-              onPressed: locked ? null : () => engine.removeDestination(point.id),
-            ),
-          ],
         ],
       ),
     );
+  }
+
+  PopupMenuItem<String> _priorityMenuItem(int? level, String label) {
+    final selected = point.priority == level;
+    return PopupMenuItem(
+      value: 'priority_$level',
+      child: Row(
+        children: [
+          if (selected)
+            const Icon(Icons.check, size: 16)
+          else
+            const SizedBox(width: 16),
+          const SizedBox(width: 8),
+          Text(label),
+        ],
+      ),
+    );
+  }
+
+  void _onMenuSelected(BuildContext context, String value) {
+    if (value == 'edit') {
+      _openEditor(context, engine, places, point);
+    } else if (value == 'remove') {
+      engine.removeDestination(point.id);
+    } else if (value.startsWith('priority_')) {
+      final levelStr = value.substring('priority_'.length);
+      final level = int.tryParse(levelStr);
+      engine.updateDestination(point.id, priority: level);
+    }
   }
 
   void _showProof(BuildContext context, MissionPoint point) {

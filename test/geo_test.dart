@@ -25,6 +25,18 @@ void main() {
     expect(travelled, closeTo(total / 2, total * 0.02));
   });
 
+  test('distanceFromPath returns perpendicular distance from a point to the path', () {
+    const path = [GeoPoint(1.0, 103.0), GeoPoint(1.0, 103.02)];
+    // Point directly north of the path midpoint.
+    final dist = distanceFromPath(path, const GeoPoint(1.001, 103.01));
+    expect(dist, greaterThan(0));
+    expect(dist, closeTo(111, 5)); // ~0.001° lat ≈ 111 m
+    // Point on the path itself.
+    expect(distanceFromPath(path, const GeoPoint(1.0, 103.01)), closeTo(0, 1));
+    // Empty path.
+    expect(distanceFromPath(const [], const GeoPoint(1.0, 103.0)), double.infinity);
+  });
+
   test('splitPath cuts the polyline into a driven and a remaining half', () {
     const path = [GeoPoint(1.0, 103.0), GeoPoint(1.0, 103.01), GeoPoint(1.0, 103.02)];
     final total = polylineLength(path);

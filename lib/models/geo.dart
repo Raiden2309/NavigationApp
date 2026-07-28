@@ -91,6 +91,26 @@ double distanceAlongPath(List<GeoPoint> path, GeoPoint point) {
   return bestTravelled;
 }
 
+/// Returns the minimum perpendicular distance (in meters) from [point] to the
+/// nearest segment of [path]. Returns infinity for an empty or single-point
+/// path.
+double distanceFromPath(List<GeoPoint> path, GeoPoint point) {
+  if (path.length < 2) return double.infinity;
+  var bestDistance = double.infinity;
+  for (var i = 1; i < path.length; i++) {
+    final segmentStart = path[i - 1];
+    final segmentEnd = path[i];
+    final segmentLength = segmentStart.distanceTo(segmentEnd);
+    final t = segmentLength == 0 ? 0.0 : _projectionFactor(segmentStart, segmentEnd, point);
+    final projection = segmentStart.lerp(segmentEnd, t);
+    final distance = projection.distanceTo(point);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+    }
+  }
+  return bestDistance;
+}
+
 /// Splits [path] at [meters] from its start, so the two halves can be drawn
 /// differently. Both halves share the split point, keeping the line unbroken.
 (List<GeoPoint>, List<GeoPoint>) splitPath(List<GeoPoint> path, double meters) {

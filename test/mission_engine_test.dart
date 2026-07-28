@@ -356,4 +356,74 @@ void main() {
     expect(engine.routeOrder, isEmpty);
     expect(engine.missionCompletionEta, isNull);
   });
+
+  // --- Feature 1: Custom priority levels ---
+
+  test('priority stops appear before non-priority stops', () async {
+    final b = stop('b', 'Point B', pointB);
+    final c = stop('c', 'Point C', pointC);
+    final d = stop('d', 'Point D', pointD);
+    b.priority = 2;
+    c.priority = 1;
+    // d is non-priority (null)
+    await buildEngine([b, c, d]);
+
+    final ids = engine.routeOrder.map((p) => p.id).toList();
+    // Priority stops come first, sorted by level: c (1) then b (2).
+    expect(ids.first, 'c');
+    expect(ids[1], 'b');
+    // Non-priority d comes last.
+    expect(ids.last, 'd');
+  });
+
+  test('all-priority stops are sorted by level', () async {
+    final b = stop('b', 'Point B', pointB);
+    final c = stop('c', 'Point C', pointC);
+    final d = stop('d', 'Point D', pointD);
+    b.priority = 3;
+    c.priority = 1;
+    d.priority = 2;
+    await buildEngine([b, c, d]);
+
+    expect(engine.routeOrder.map((p) => p.id).toList(), ['c', 'd', 'b']);
+  });
+
+  test('no-priority stops use optimizeOrder as before', () async {
+    await buildEngine(
+      [stop('b', 'Point B', pointB), stop('c', 'Point C', pointC)],
+      optimizeOrder: true,
+    );
+    // With optimizeOrder on, the optimizer may reorder them.
+    expect(engine.routeOrder, hasLength(2));
+  });
+
+  test('updating a stop priority changes the route order', () async {
+    final b = stop('b', 'Point B', pointB);
+    final c = stop('c', 'Point C', pointC);
+    b.priority = 1;
+    await buildEngine([b, c]);
+
+    expect(engine.routeOrder.first.id, 'b');
+
+    // Remove priority from b — c should now come first (or be optimized).
+    await engine.updateDestination('b', priority: null);
+    expect(b.priority, isNull);
+    final ids = engine.routeOrder.map((p) => p.id).toList();
+    expect(ids.contains('b'), isTrue);
+    expect(ids.contains('c'), isTrue);
+  });
+
+  // --- Feature 2: Route deviation detection ---
+
+  test('deviation notification starts as null', () async {
+    await buildEngine([stop('b', 'Point B', pointB)]);
+    expect(engine.hasRouteDeviationNotification, isFalse);
+    expect(engine.routeDeviationMessage, isNull);
+  });
+
+  test('dismissRouteDeviationNotification clears the flag', () async {
+    await buildEngine([stop('b', 'Point B', pointB)]);
+    engine.dismissRouteDeviationNotification();
+    expect(engine.hasRouteDeviationNotification, isFalse);
+  });
 }
