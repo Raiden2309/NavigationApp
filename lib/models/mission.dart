@@ -5,6 +5,34 @@ const Duration defaultDwellTime = Duration(minutes: 15);
 
 enum MissionPointStatus { pending, enRoute, onSite, completed }
 
+enum ProofType { checkin, photo, note }
+
+/// A proof artifact captured at a stop: a check-in, photo or note.
+class MissionProof {
+  MissionProof({
+    required this.id,
+    required this.type,
+    this.fileUrl,
+    this.note,
+    this.location,
+    DateTime? capturedAt,
+  }) : capturedAt = capturedAt ?? DateTime.now();
+
+  final String id;
+  final ProofType type;
+
+  /// File path or URL for photo proofs.
+  final String? fileUrl;
+
+  /// Text content for note proofs.
+  final String? note;
+
+  /// Where the proof was captured.
+  final GeoPoint? location;
+
+  final DateTime capturedAt;
+}
+
 /// A stop on the mission. Point A is the starting point, every later point is
 /// a destination the mission operator can add, move or remove.
 class MissionPoint {
@@ -17,7 +45,9 @@ class MissionPoint {
     this.status = MissionPointStatus.pending,
     this.arrivedAt,
     this.completedAt,
-  });
+    this.checkedInAt,
+    List<MissionProof>? proofs,
+  }) : proofs = proofs ?? [];
 
   final String id;
   String label;
@@ -31,7 +61,24 @@ class MissionPoint {
   DateTime? arrivedAt;
   DateTime? completedAt;
 
+  /// Manual check-in timestamp, set by the operator when on site.
+  DateTime? checkedInAt;
+
+  /// Proof artifacts (photos, notes, check-ins) captured at this stop.
+  final List<MissionProof> proofs;
+
   bool get isCompleted => status == MissionPointStatus.completed;
+
+  bool get checkedIn => checkedInAt != null;
+
+  /// Whether this stop can be completed: all three proof types (check-in,
+  /// photo, note) must have been captured.
+  bool get canComplete {
+    final hasCheckIn = checkedIn;
+    final hasPhoto = proofs.any((p) => p.type == ProofType.photo);
+    final hasNote = proofs.any((p) => p.type == ProofType.note);
+    return hasCheckIn && hasPhoto && hasNote;
+  }
 
   /// Dwell time still to be served, given [now].
   Duration remainingDwell(DateTime now) {
@@ -43,7 +90,12 @@ class MissionPoint {
     return remaining.isNegative ? Duration.zero : remaining;
   }
 
-  MissionPoint copyWith({String? label, GeoPoint? location, String? address, Duration? dwellTime}) =>
+  MissionPoint copyWith({
+    String? label,
+    GeoPoint? location,
+    String? address,
+    Duration? dwellTime,
+  }) =>
       MissionPoint(
         id: id,
         label: label ?? this.label,
@@ -53,16 +105,19 @@ class MissionPoint {
         status: status,
         arrivedAt: arrivedAt,
         completedAt: completedAt,
+        checkedInAt: checkedInAt,
+        proofs: List.of(proofs),
       );
 }
 
-class MissionStop {
+/// Legacy data class kept for route_optimization_service compatibility.
+class RouteStop {
   final String id;
   final double latitude;
   final double longitude;
   final int priority;
 
-  MissionStop({
+  RouteStop({
     required this.id,
     required this.latitude,
     required this.longitude,

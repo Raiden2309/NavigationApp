@@ -3,17 +3,17 @@ import '../models/mission.dart';
 
 class RouteOptimizationService {
   
-  List<MissionStop> optimizeRoute({
-    required MissionStop currentLocation,
-    required List<MissionStop> unvisitedStops,
+  List<RouteStop> optimizeRoute({
+    required RouteStop currentLocation,
+    required List<RouteStop> unvisitedStops,
     required double priorityWeight,
   }) {
-    List<MissionStop> remaining = List.from(unvisitedStops);
-    List<MissionStop> optimizedRoute = [];
-    MissionStop current = currentLocation;
+    List<RouteStop> remaining = List.from(unvisitedStops);
+    List<RouteStop> optimizedRoute = [];
+    RouteStop current = currentLocation;
 
     while (remaining.isNotEmpty) {
-      MissionStop? nextStop;
+      RouteStop? nextStop;
       double lowestScore = double.infinity;
 
       for (var stop in remaining) {
@@ -37,7 +37,7 @@ class RouteOptimizationService {
     return optimizedRoute;
   }
 
-  double _calculateEstimatedTravelTime(MissionStop start, MissionStop end) {
+  double _calculateEstimatedTravelTime(RouteStop start, RouteStop end) {
     const double earthRadiusKm = 6371.0;
     const double averageSpeedKmH = 40.0; 
 

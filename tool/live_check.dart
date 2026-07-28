@@ -19,23 +19,23 @@ Future<void> main() async {
   final places = GooglePlacesService(apiKey: key);
   final directions = GoogleDirectionsService(apiKey: key);
 
-  final suggestions = await places.search('Jurong Port Singapore');
+  final suggestions = await places.search('Sepangar Bay Container Port Kota Kinabalu');
   stdout.writeln('Autocomplete: ${suggestions.map((s) => s.title).toList()}');
   final origin = await places.resolve(suggestions.first);
   stdout.writeln('Origin: ${origin?.name} ${origin?.address} ${origin?.location}');
 
   final destinations = [
-    singaporeLandmarks[3].location,
-    singaporeLandmarks[4].location,
-    singaporeLandmarks[6].location,
+    kotaKinabaluLandmarks[3].location,
+    kotaKinabaluLandmarks[4].location,
+    kotaKinabaluLandmarks[5].location,
   ];
 
   for (final scenario in {
     'now': DateTime.now().add(const Duration(minutes: 1)),
-    'tomorrow 18:00 Singapore time': _nextWeekdayAt(18),
+    'tomorrow 18:00 Malaysia time': _nextWeekdayAt(18),
   }.entries) {
     final plan = await directions.optimizedRoute(
-      origin: origin?.location ?? singaporeLandmarks[0].location,
+      origin: origin?.location ?? kotaKinabaluLandmarks[0].location,
       destinations: destinations,
       departureTime: scenario.value,
       dwellTimes: const [Duration(minutes: 15), Duration(minutes: 15), Duration(minutes: 15)],
@@ -53,7 +53,7 @@ Future<void> main() async {
   }
 }
 
-/// The next weekday at [hour] Singapore time (UTC+8), where the demo stops are.
+/// The next weekday at [hour] Malaysia time (UTC+8), where the demo stops are.
 DateTime _nextWeekdayAt(int hour) {
   var day = DateTime.now().toUtc().add(const Duration(days: 1));
   while (day.weekday == DateTime.saturday || day.weekday == DateTime.sunday) {

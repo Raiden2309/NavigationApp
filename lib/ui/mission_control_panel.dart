@@ -10,11 +10,19 @@ import 'formatting.dart';
 
 /// Mission operator tools: add, re-prioritize, retime or drop any destination
 /// after Point A. Every edit re-plans the remaining route immediately.
-class MissionControlPanel extends StatelessWidget {
+class MissionControlPanel extends StatefulWidget {
   const MissionControlPanel({super.key, required this.engine, required this.places});
 
   final MissionEngine engine;
   final PlacesService places;
+
+  @override
+  State<MissionControlPanel> createState() => _MissionControlPanelState();
+}
+
+class _MissionControlPanelState extends State<MissionControlPanel> {
+  MissionEngine get engine => widget.engine;
+  PlacesService get places => widget.places;
 
   @override
   Widget build(BuildContext context) {
@@ -22,24 +30,125 @@ class MissionControlPanel extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Card(
-          color: theme.colorScheme.secondaryContainer,
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Text(engine.optimizeOrder
-                ? 'Search for a place or tap the map to drop a destination. Point A is fixed; '
-                    'the rest are re-ordered for the fastest route.'
-                : 'Search for a place or tap the map to drop a destination. Point A is fixed; '
-                    'the rest are served in this order, so a new customer queues last.'),
+        // Mission finalized notification + actions
+        if (engine.isMissionFinalized)
+          Card(
+            color: engine.isMissionVerified
+                ? Colors.green.withValues(alpha: 0.1)
+                : Colors.purple.withValues(alpha: 0.1),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        engine.isMissionVerified ? Icons.verified : Icons.notifications_active,
+                        color: engine.isMissionVerified ? Colors.green : Colors.purple,
+                        size: 32,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              engine.isMissionVerified ? 'Mission Verified' : 'Mission Completed',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                color: engine.isMissionVerified
+                                    ? Colors.green.shade700
+                                    : Colors.purple.shade700,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              engine.isMissionVerified
+                                  ? 'Verified at ${formatClockTime(engine.missionVerifiedAt!)}'
+                                  : 'Operator finalized at ${formatClockTime(engine.missionCompletedAt!)}',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      if (!engine.isMissionVerified)
+                        FilledButton.icon(
+                          onPressed: () => _verifyMission(context),
+                          icon: const Icon(Icons.verified),
+                          label: const Text('Verify Mission'),
+                          style: FilledButton.styleFrom(backgroundColor: Colors.green),
+                        ),
+                      if (engine.isMissionVerified)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: Chip(
+                            avatar: const Icon(Icons.check_circle, size: 18, color: Colors.green),
+                            label: const Text('Verified'),
+                            backgroundColor: Colors.green.withValues(alpha: 0.1),
+                          ),
+                        ),
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        onPressed: () => _contactOperator(context),
+                        icon: const Icon(Icons.phone),
+                        label: const Text('Contact Operator'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           ),
-        ),
+        // Mission metadata card
+        if (engine.title.isNotEmpty || engine.missionNumber.isNotEmpty)
+          Card(
+            color: theme.colorScheme.tertiaryContainer,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (engine.title.isNotEmpty)
+                    Text(engine.title, style: theme.textTheme.titleMedium),
+                  if (engine.missionNumber.isNotEmpty)
+                    Text('Mission #${engine.missionNumber}',
+                        style: theme.textTheme.bodySmall),
+                  if (engine.instructions != null &&
+                      engine.instructions!.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(engine.instructions!,
+                        style: theme.textTheme.bodySmall),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        // Instruction card — hidden when finalized (read-only)
+        if (!engine.isMissionFinalized)
+          Card(
+            color: theme.colorScheme.secondaryContainer,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text(engine.optimizeOrder
+                  ? 'Search for a place or tap the map to drop a destination. Point A is fixed; '
+                      'the rest are re-ordered for the fastest route.'
+                  : 'Search for a place or tap the map to drop a destination. Point A is fixed; '
+                      'the rest are served in this order, so a new customer queues last.'),
+            ),
+          ),
+        // Optimize switch — disabled when finalized
         SwitchListTile(
           title: const Text('Optimize visiting order'),
           subtitle: Text(engine.optimizeOrder
               ? 'Stops are re-ordered for the shortest drive'
               : 'Stops keep their customer priority order'),
           value: engine.optimizeOrder,
-          onChanged: (value) => engine.setOptimizeOrder(value),
+          onChanged: engine.isMissionFinalized ? null : (value) => engine.setOptimizeOrder(value),
         ),
         const SizedBox(height: 12),
         ListTile(
@@ -50,14 +159,92 @@ class MissionControlPanel extends StatelessWidget {
         const Divider(),
         for (final point in engine.destinations)
           _DestinationTile(engine: engine, places: places, point: point),
-        const SizedBox(height: 12),
-        OutlinedButton.icon(
-          onPressed: () => _openEditor(context, engine, places, null),
-          icon: const Icon(Icons.add_location_alt),
-          label: const Text('Add destination'),
-        ),
+        // Add destination — hidden when finalized
+        if (!engine.isMissionFinalized) ...[
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: () => _openEditor(context, engine, places, null),
+            icon: const Icon(Icons.add_location_alt),
+            label: const Text('Add destination'),
+          ),
+        ],
       ],
     );
+  }
+
+  void _verifyMission(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Verify Mission?'),
+        content: const Text(
+          'Confirm that all proof has been reviewed and the mission is verified as complete.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.green),
+            child: const Text('Verify'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      engine.verifyMission();
+    }
+  }
+
+  void _contactOperator(BuildContext context) async {
+    final method = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Contact Operator'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, 'call'),
+            child: const Row(
+              children: [
+                Icon(Icons.phone, size: 20),
+                SizedBox(width: 12),
+                Text('Call operator'),
+              ],
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, 'message'),
+            child: const Row(
+              children: [
+                Icon(Icons.message, size: 20),
+                SizedBox(width: 12),
+                Text('Send message'),
+              ],
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, 'email'),
+            child: const Row(
+              children: [
+                Icon(Icons.email, size: 20),
+                SizedBox(width: 12),
+                Text('Send email'),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (method != null && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Operator contacted via $method'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
   }
 }
 
@@ -71,7 +258,9 @@ class _DestinationTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final locked = point.isCompleted || point.status == MissionPointStatus.onSite;
+    final readOnly = engine.isMissionFinalized;
     final sequence = engine.routeOrder.indexOf(point);
+    final hasProofs = point.proofs.isNotEmpty || point.checkedIn;
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: point.isCompleted ? Colors.grey : null,
@@ -83,7 +272,13 @@ class _DestinationTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (!engine.optimizeOrder) ...[
+          if (hasProofs)
+            IconButton(
+              tooltip: 'View proof',
+              icon: const Icon(Icons.visibility),
+              onPressed: () => _showProof(context, point),
+            ),
+          if (!readOnly && !engine.optimizeOrder) ...[
             IconButton(
               tooltip: 'Higher priority',
               icon: const Icon(Icons.arrow_upward),
@@ -95,16 +290,160 @@ class _DestinationTile extends StatelessWidget {
               onPressed: locked ? null : () => engine.moveDestination(point.id, 1),
             ),
           ],
-          IconButton(
-            tooltip: locked ? 'Stop is in progress or done' : 'Edit',
-            icon: const Icon(Icons.edit),
-            onPressed: locked ? null : () => _openEditor(context, engine, places, point),
+          if (!readOnly) ...[
+            IconButton(
+              tooltip: locked ? 'Stop is in progress or done' : 'Edit',
+              icon: const Icon(Icons.edit),
+              onPressed: locked ? null : () => _openEditor(context, engine, places, point),
+            ),
+            IconButton(
+              tooltip: locked ? 'Stop is in progress or done' : 'Remove',
+              icon: const Icon(Icons.delete_outline),
+              onPressed: locked ? null : () => engine.removeDestination(point.id),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _showProof(BuildContext context, MissionPoint point) {
+    showDialog(
+      context: context,
+      builder: (context) => _ProofDialog(point: point),
+    );
+  }
+}
+
+class _ProofDialog extends StatelessWidget {
+  const _ProofDialog({required this.point});
+
+  final MissionPoint point;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AlertDialog(
+      title: Text('Proof — ${point.label}'),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Stop location — show address, fall back to coordinates
+              _ProofRow(
+                icon: Icons.place,
+                label: 'Stop location',
+                value: point.address ??
+                    '${point.location.latitude.toStringAsFixed(6)}, ${point.location.longitude.toStringAsFixed(6)}',
+              ),
+              if (point.arrivedAt != null)
+                _ProofRow(
+                  icon: Icons.location_on,
+                  label: 'Arrived',
+                  value: formatClockTime(point.arrivedAt!),
+                ),
+              if (point.checkedIn)
+                _ProofRow(
+                  icon: Icons.fingerprint,
+                  label: 'Checked in',
+                  value: formatClockTime(point.checkedInAt!),
+                ),
+              if (point.completedAt != null)
+                _ProofRow(
+                  icon: Icons.check_circle,
+                  label: 'Completed',
+                  value: formatClockTime(point.completedAt!),
+                ),
+              if (point.proofs.isEmpty && !point.checkedIn)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text('No proof captured yet.',
+                      style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+                ),
+              for (final proof in point.proofs) ...[
+                const Divider(),
+                switch (proof.type) {
+                  ProofType.checkin => _ProofRow(
+                      icon: Icons.fingerprint,
+                      label: 'Check-in',
+                      value: formatClockTime(proof.capturedAt),
+                    ),
+                  ProofType.photo => Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _ProofRow(
+                          icon: Icons.camera_alt,
+                          label: 'Photo',
+                          value: proof.fileUrl ?? 'unknown',
+                        ),
+                        if (proof.location != null)
+                          _ProofRow(
+                            icon: Icons.gps_fixed,
+                            label: 'GPS',
+                            value:
+                                '${proof.location!.latitude.toStringAsFixed(6)}, ${proof.location!.longitude.toStringAsFixed(6)}',
+                          ),
+                      ],
+                    ),
+                  ProofType.note => Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _ProofRow(
+                          icon: Icons.note,
+                          label: 'Note',
+                          value: formatClockTime(proof.capturedAt),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '"${proof.note}"',
+                          style:
+                              theme.textTheme.bodyMedium?.copyWith(fontStyle: FontStyle.italic),
+                        ),
+                        if (proof.location != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: _ProofRow(
+                              icon: Icons.gps_fixed,
+                              label: 'GPS',
+                              value:
+                                  '${proof.location!.latitude.toStringAsFixed(6)}, ${proof.location!.longitude.toStringAsFixed(6)}',
+                            ),
+                          ),
+                      ],
+                    ),
+                },
+              ],
+            ],
           ),
-          IconButton(
-            tooltip: locked ? 'Stop is in progress or done' : 'Remove',
-            icon: const Icon(Icons.delete_outline),
-            onPressed: locked ? null : () => engine.removeDestination(point.id),
-          ),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+      ],
+    );
+  }
+}
+
+class _ProofRow extends StatelessWidget {
+  const _ProofRow({required this.icon, required this.label, required this.value});
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: Colors.grey),
+          const SizedBox(width: 8),
+          Text('$label: ', style: const TextStyle(fontWeight: FontWeight.w500)),
+          Expanded(child: Text(value, overflow: TextOverflow.ellipsis)),
         ],
       ),
     );

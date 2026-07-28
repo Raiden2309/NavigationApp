@@ -42,6 +42,11 @@ class MissionEngine extends ChangeNotifier {
     this.planRetryInterval = const Duration(seconds: 10),
     this.reoptimizeInterval = const Duration(minutes: 5),
     bool optimizeOrder = false,
+    this.missionId = '',
+    this.missionNumber = '',
+    this.title = '',
+    this.instructions,
+    this.scheduledAt,
     // A named parameter cannot be private, so the field below cannot be an
     // initializing formal.
     // ignore: prefer_initializing_formals
@@ -52,6 +57,13 @@ class MissionEngine extends ChangeNotifier {
         clock = clock ?? const SystemClock();
 
   final MissionPoint startingPoint;
+
+  /// Mission metadata.
+  final String missionId;
+  final String missionNumber;
+  final String title;
+  final String? instructions;
+  final DateTime? scheduledAt;
   final DirectionsService _directions;
   final LocationService _location;
   final MissionClock clock;
@@ -165,12 +177,86 @@ class MissionEngine extends ChangeNotifier {
   }
 
   /// Marks the on-site tasks as done before the 15 minute allowance expires.
-  Future<void> completeCurrentStop() async {
+  /// Returns true if the stop was completed, false if proof is still required.
+  Future<bool> completeCurrentStop() async {
     final stop = currentStop;
-    if (stop == null || _status != MissionStatus.onSite) return;
+    if (stop == null || _status != MissionStatus.onSite) return false;
+    if (!stop.canComplete) return false;
     stop.status = MissionPointStatus.completed;
     stop.completedAt = clock.now();
     await _advance();
+    return true;
+  }
+
+  /// Manual check-in at the current stop. Only valid when on site.
+  Future<void> checkIn() async {
+    final stop = currentStop;
+    if (stop == null || _status != MissionStatus.onSite) return;
+    if (stop.checkedIn) return;
+    stop.checkedInAt = clock.now();
+    stop.proofs.add(MissionProof(
+      id: 'pc${DateTime.now().microsecondsSinceEpoch}',
+      type: ProofType.checkin,
+      location: _operatorPosition,
+      capturedAt: clock.now(),
+    ));
+    notifyListeners();
+  }
+
+  /// Append a note proof to the current stop.
+  Future<void> addNote(String text) async {
+    final stop = currentStop;
+    if (stop == null || _status != MissionStatus.onSite) return;
+    if (text.trim().isEmpty) return;
+    stop.proofs.add(MissionProof(
+      id: 'pn${DateTime.now().microsecondsSinceEpoch}',
+      type: ProofType.note,
+      note: text.trim(),
+      location: _operatorPosition,
+      capturedAt: clock.now(),
+    ));
+    notifyListeners();
+  }
+
+  /// Append a photo proof to the current stop. [fileUrl] is a path or URL
+  /// to the captured image (mocked for now).
+  Future<void> uploadPhoto(String fileUrl) async {
+    final stop = currentStop;
+    if (stop == null || _status != MissionStatus.onSite) return;
+    stop.proofs.add(MissionProof(
+      id: 'pp${DateTime.now().microsecondsSinceEpoch}',
+      type: ProofType.photo,
+      fileUrl: fileUrl,
+      location: _operatorPosition,
+      capturedAt: clock.now(),
+    ));
+    notifyListeners();
+  }
+
+  /// Finalize the whole mission. Only valid when every stop is completed.
+  /// Records a timestamp that Mission Control can observe.
+  DateTime? missionCompletedAt;
+
+  /// Mission Control's verification timestamp. Set after reviewing all proof.
+  DateTime? missionVerifiedAt;
+
+  bool get isMissionFinalized => missionCompletedAt != null;
+  bool get isMissionVerified => missionVerifiedAt != null;
+
+  Future<void> completeMission() async {
+    if (_status != MissionStatus.completed) return;
+    if (!_destinations.every((p) => p.isCompleted)) return;
+    if (isMissionFinalized) return;
+    missionCompletedAt = clock.now();
+    notifyListeners();
+  }
+
+  /// Mission Control verifies and confirms the mission is complete.
+  Future<void> verifyMission() async {
+    if (!isMissionFinalized) return;
+    if (isMissionVerified) return;
+    missionVerifiedAt = clock.now();
+    notifyListeners();
   }
 
   // --- Mission operator edits -------------------------------------------
@@ -300,10 +386,17 @@ class MissionEngine extends ChangeNotifier {
     }
     if (_status == MissionStatus.onSite && stop != null) {
       if (stop.remainingDwell(clock.now()) == Duration.zero) {
-        stop.status = MissionPointStatus.completed;
-        stop.completedAt = clock.now();
-        unawaited(_advance());
-        return;
+        // Dwell time has expired. Only auto-advance if all proof requirements
+        // are met; otherwise the operator must stay on site and capture the
+        // missing proof before they can proceed.
+        if (stop.canComplete) {
+          stop.status = MissionPointStatus.completed;
+          stop.completedAt = clock.now();
+          unawaited(_advance());
+          return;
+        }
+        // Proof requirements not yet fulfilled — the operator remains on site
+        // even though the dwell timer has expired.
       }
     }
     notifyListeners();

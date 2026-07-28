@@ -305,7 +305,7 @@ class NominatimPlacesService implements PlacesService {
 /// Offline place lookup over a fixed gazetteer of real locations, so the demo
 /// still searches by name without an API key.
 class MockPlacesService implements PlacesService {
-  const MockPlacesService({this.places = singaporeLandmarks});
+  const MockPlacesService({this.places = kotaKinabaluLandmarks});
 
   final List<Place> places;
 
@@ -355,77 +355,67 @@ class MockPlacesService implements PlacesService {
   }
 }
 
-/// Real coordinates for well known Singapore logistics and landmark sites.
-const List<Place> singaporeLandmarks = [
+/// Real coordinates for well known Kota Kinabalu logistics and landmark sites.
+const List<Place> kotaKinabaluLandmarks = [
   Place(
-    name: 'Jurong Port',
-    address: '37 Jurong Port Rd, Singapore 619110',
-    location: GeoPoint(1.2966, 103.7164),
+    name: 'Sepangar Bay Container Port',
+    address: '89200 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(6.0671335, 116.1236047),
   ),
   Place(
-    name: 'Tuas Mega Port',
-    address: 'Tuas South Blvd, Singapore 637000',
-    location: GeoPoint(1.2494, 103.6272),
+    name: 'Kota Kinabalu International Airport',
+    address: '88740 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(5.923283, 116.0512391),
   ),
   Place(
-    name: 'PSA Pasir Panjang Terminal',
-    address: '31 Pasir Panjang Rd, Singapore 118503',
-    location: GeoPoint(1.2755, 103.7778),
+    name: 'Asia City',
+    address: 'Asia City, 88000 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(5.977123, 116.072573),
   ),
   Place(
-    name: 'Keppel Distripark',
-    address: '511 Kampong Bahru Rd, Singapore 099447',
-    location: GeoPoint(1.2712, 103.8194),
+    name: 'City Mall',
+    address: 'City Mall, Jln Lintas, 88300 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(5.96137, 116.0971866),
   ),
   Place(
-    name: 'Changi Airfreight Centre',
-    address: '9 Airline Rd, Singapore 819827',
-    location: GeoPoint(1.3612, 103.9860),
+    name: 'Sutera Harbour',
+    address: 'Sutera Harbour, 88100 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(5.968281, 116.0581489),
   ),
   Place(
-    name: 'Changi Airport Terminal 3',
-    address: '65 Airport Blvd, Singapore 819663',
-    location: GeoPoint(1.3563, 103.9865),
+    name: 'Imago Mall',
+    address: 'KK Times Square, Phase 2, Off Coastal Highway, 88100 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(5.9708621, 116.0663544),
   ),
   Place(
-    name: 'Woodlands Checkpoint',
-    address: '21 Woodlands Crossing, Singapore 738203',
-    location: GeoPoint(1.4470, 103.7690),
+    name: 'Suria Sabah',
+    address: '1 Jln Tun Fuad Stephens, Pusat Bandar, 88000 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(5.9867933, 116.0775039),
   ),
   Place(
-    name: 'Tuas Checkpoint',
-    address: '11 Tuas Checkpoint, Singapore 639307',
-    location: GeoPoint(1.3479, 103.6363),
+    name: '1 Borneo Hypermall',
+    address: '139 Jalan Sepangar, 88400 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(6.0348008, 116.1290794),
   ),
   Place(
-    name: 'Marina Bay Sands',
-    address: '10 Bayfront Ave, Singapore 018956',
-    location: GeoPoint(1.2834, 103.8607),
+    name: 'Centre Point Sabah',
+    address: '1 Lrg Centre Point, Pusat Bandar, 88000 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(5.9779246, 116.0720678),
   ),
   Place(
-    name: 'Singapore Expo',
-    address: '1 Expo Dr, Singapore 486150',
-    location: GeoPoint(1.3345, 103.9615),
+    name: 'Kota Kinabalu Wetland Ramsar Site',
+    address: 'Jln Bukit Bendera, Upper Likas, 88400 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(5.9879578, 116.0892242),
   ),
   Place(
-    name: 'Ang Mo Kio Industrial Park 2',
-    address: 'Ang Mo Kio Industrial Park 2, Singapore 569511',
-    location: GeoPoint(1.3760, 103.8552),
+    name: 'Menara Kinabalu (Sabah State Administrative Centre)',
+    address: '88400 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(6.0150824, 116.1110070),
   ),
   Place(
-    name: 'Sungei Kadut Industrial Estate',
-    address: 'Sungei Kadut Way, Singapore 728785',
-    location: GeoPoint(1.4131, 103.7480),
-  ),
-  Place(
-    name: 'Toa Payoh Industrial Park',
-    address: 'Lor 8 Toa Payoh, Singapore 319261',
-    location: GeoPoint(1.3350, 103.8560),
-  ),
-  Place(
-    name: 'Alexandra Distripark',
-    address: '3 Pasir Panjang Rd, Singapore 118480',
-    location: GeoPoint(1.2740, 103.8028),
+    name: 'Kolombong/BDC Industrial Estate',
+    address: '88450 Kota Kinabalu, Sabah, Malaysia',
+    location: GeoPoint(5.981902, 116.1205819),
   ),
 ];
 

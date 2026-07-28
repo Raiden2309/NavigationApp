@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'models/geo.dart';
 import 'models/mission.dart';
 import 'services/directions_service.dart';
 import 'services/location_service.dart';
@@ -56,20 +57,34 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
   late final MissionEngine _engine;
   late final PlacesService _places;
 
-  /// Real dispatch sites; Point A is the depot the operator starts from.
-  static final MissionPoint _startingPoint = _pointFor('a', singaporeLandmarks[0]);
+  /// Real dispatch sites in Kota Kinabalu; Point A is the depot the operator
+  /// starts from.
+  static final MissionPoint _startingPoint = MissionPoint(
+    id: 'a',
+    label: 'Asia City',
+    address: 'Asia City, 88000 Kota Kinabalu, Sabah, Malaysia',
+    location: const GeoPoint(5.977123, 116.072573),
+  );
   static final List<MissionPoint> _destinations = [
-    _pointFor('b', singaporeLandmarks[3]),
-    _pointFor('c', singaporeLandmarks[4]),
-    _pointFor('d', singaporeLandmarks[6]),
+    MissionPoint(
+      id: 'b',
+      label: 'City Mall',
+      address: 'City Mall, Jln Lintas, 88300 Kota Kinabalu, Sabah, Malaysia',
+      location: const GeoPoint(5.96137, 116.0971866),
+    ),
+    MissionPoint(
+      id: 'c',
+      label: 'Sutera Harbour',
+      address: 'Sutera Harbour, 88100 Kota Kinabalu, Sabah, Malaysia',
+      location: const GeoPoint(5.968281, 116.0581489),
+    ),
+    MissionPoint(
+      id: 'd',
+      label: 'Imago Mall',
+      address: 'KK Times Square, Phase 2, Off Coastal Highway, 88100 Kota Kinabalu, Sabah, Malaysia',
+      location: const GeoPoint(5.9708621, 116.0663544),
+    ),
   ];
-
-  static MissionPoint _pointFor(String id, Place place) => MissionPoint(
-        id: id,
-        label: place.name,
-        address: place.address,
-        location: place.location,
-      );
 
   @override
   void initState() {
@@ -97,8 +112,11 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
       directionsService: buildDirectionsService(),
       locationService: _location,
       clock: _clock,
-      // Measured on the mission clock, so the sped-up demo re-checks traffic
-      // every 20 seconds of real time rather than every 20 minutes.
+      missionId: 'm001',
+      missionNumber: 'MSN-2026-0728',
+      title: 'KK City Delivery Run',
+      instructions: 'Deliver packages to all stops. Proof of delivery required at City Mall.',
+      scheduledAt: DateTime(2026, 7, 28, 8, 0),
       reoptimizeInterval: useDeviceLocation
           ? const Duration(minutes: 5)
           : const Duration(minutes: 20),

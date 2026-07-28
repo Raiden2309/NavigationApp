@@ -13,12 +13,16 @@ class OperatorPosition {
     required this.speedMetersPerSecond,
     required this.headingDegrees,
     required this.timestamp,
+    this.accuracyMeters,
   });
 
   final GeoPoint point;
   final double speedMetersPerSecond;
   final double headingDegrees;
   final DateTime timestamp;
+
+  /// Horizontal accuracy of the fix in meters, when available from the OS.
+  final double? accuracyMeters;
 }
 
 /// Live position feed for the operator's device.
@@ -98,6 +102,7 @@ class GeolocatorLocationService implements LocationService {
       speedMetersPerSecond: position.speed,
       headingDegrees: position.heading,
       timestamp: position.timestamp,
+      accuracyMeters: position.accuracy,
     );
     _controller.add(_last!);
   }
@@ -217,6 +222,7 @@ class SimulatedLocationService implements LocationService {
       speedMetersPerSecond: speed,
       headingDegrees: heading,
       timestamp: timestamp,
+      accuracyMeters: gpsNoiseMeters > 0 ? gpsNoiseMeters : 0,
     );
     _lastPosition = position;
     if (!_controller.isClosed) _controller.add(position);
