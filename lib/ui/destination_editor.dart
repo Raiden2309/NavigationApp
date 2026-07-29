@@ -4,23 +4,32 @@ import 'package:flutter/material.dart';
 
 import '../models/geo.dart';
 import '../models/mission.dart';
+import '../services/kod_lokasi_service.dart';
 import '../services/places_service.dart';
 
 class EditorResult {
-  const EditorResult(this.label, this.location, this.address, this.dwellTime);
+  const EditorResult(this.label, this.location, this.address, this.dwellTime, this.kodLokasi);
 
   final String label;
   final GeoPoint location;
   final String? address;
   final Duration dwellTime;
+  final String? kodLokasi;
 }
 
 class DestinationEditor extends StatefulWidget {
-  const DestinationEditor({super.key, required this.point, required this.places, required this.near});
+  const DestinationEditor({
+    super.key,
+    required this.point,
+    required this.places,
+    required this.near,
+    this.kodLokasi,
+  });
 
   final MissionPoint? point;
   final PlacesService places;
   final GeoPoint near;
+  final KodLokasiService? kodLokasi;
 
   @override
   State<DestinationEditor> createState() => DestinationEditorState();
@@ -33,6 +42,8 @@ class DestinationEditorState extends State<DestinationEditor> {
       TextEditingController(text: widget.point?.label ?? 'New destination');
   late final TextEditingController _dwell = TextEditingController(
       text: '${(widget.point?.dwellTime ?? const Duration(minutes: 15)).inMinutes}');
+  late final TextEditingController _kodLokasiCtrl =
+      TextEditingController(text: widget.point?.kodLokasi ?? '');
 
   Timer? _debounce;
   List<PlaceSuggestion> _suggestions = const [];
@@ -41,16 +52,25 @@ class DestinationEditorState extends State<DestinationEditor> {
   String _query = '';
   String? _searchedQuery;
 
+  Timer? _kodLokasiDebounce;
+  bool _resolvingKodLokasi = false;
+  String? _kodLokasiError;
+  int _kodLokasiGeneration = 0;
+  bool _autoPopulatingKodLokasi = false;
+
   int _searchGeneration = 0;
   late GeoPoint _location = widget.point?.location ?? widget.near;
   late String? _address = widget.point?.address;
+  late String? _resolvedKodLokasi = widget.point?.kodLokasi;
 
   @override
   void dispose() {
     _debounce?.cancel();
+    _kodLokasiDebounce?.cancel();
     _search.dispose();
     _label.dispose();
     _dwell.dispose();
+    _kodLokasiCtrl.dispose();
     super.dispose();
   }
 
@@ -61,36 +81,38 @@ class DestinationEditorState extends State<DestinationEditor> {
   }
 
   Future<void> _runSearch(String query) async {
-    final generation = ++_searchGeneration;
+    final gen = ++_searchGeneration;
     if (query.trim().length < minSearchLength) {
-      setState(() {
+      _setStateSearch(gen, () {
         _suggestions = const [];
         _searchedQuery = null;
         _searching = false;
       });
       return;
     }
-    setState(() {
+    _setStateSearch(gen, () {
       _searching = true;
       _searchError = null;
     });
     try {
       final results = await widget.places.search(query, near: widget.near);
-      if (mounted && generation == _searchGeneration) {
-        setState(() {
-          _suggestions = results;
-          _searchedQuery = query;
-        });
-      }
+      _setStateSearch(gen, () {
+        _suggestions = results;
+        _searchedQuery = query;
+      });
     } catch (error) {
-      if (mounted && generation == _searchGeneration) {
-        setState(() => _searchError = _describe(error));
-      }
+      _setStateSearch(gen, () => _searchError = _describe(error));
     } finally {
-      if (mounted && generation == _searchGeneration) {
-        setState(() => _searching = false);
-      }
+      _setStateSearch(gen, () => _searching = false);
     }
+  }
+
+  void _setStateSearch(int gen, VoidCallback fn) {
+    if (mounted && gen == _searchGeneration) setState(fn);
+  }
+
+  void _setStateKodLokasi(int gen, VoidCallback fn) {
+    if (mounted && gen == _kodLokasiGeneration) setState(fn);
   }
 
   String _describe(Object error) => switch (error) {
@@ -122,14 +144,103 @@ class DestinationEditorState extends State<DestinationEditor> {
         _suggestions = const [];
         _search.text = place.name;
       });
+
+      final kodLokasi = widget.kodLokasi;
+      if (kodLokasi != null) {
+        try {
+          final result = await kodLokasi.search(place.location);
+          if (mounted && result != null) {
+            _kodLokasiDebounce?.cancel();
+            _autoPopulatingKodLokasi = true;
+            _kodLokasiCtrl.text = result.kodLokasi;
+            setState(() {
+              _resolvedKodLokasi = result.kodLokasi;
+            });
+          }
+        } catch (_) {}
+      }
     } catch (error) {
       if (mounted) setState(() => _searchError = _describe(error));
     }
   }
 
+  void _onKodLokasiChanged(String value) {
+    if (_autoPopulatingKodLokasi) {
+      _autoPopulatingKodLokasi = false;
+      return;
+    }
+    _kodLokasiDebounce?.cancel();
+    _kodLokasiDebounce = Timer(const Duration(milliseconds: 600), () => _resolveKodLokasi());
+  }
+
+  Future<void> _resolveKodLokasi() async {
+    final code = _kodLokasiCtrl.text.trim();
+    if (code.isEmpty) return;
+    final service = widget.kodLokasi;
+    if (service == null) return;
+
+    final gen = ++_kodLokasiGeneration;
+    _setStateKodLokasi(gen, () {
+      _resolvingKodLokasi = true;
+      _kodLokasiError = null;
+    });
+
+    try {
+      final result = await service.reverse(code);
+      if (!mounted || gen != _kodLokasiGeneration) return;
+      if (result == null) {
+        _setStateKodLokasi(gen, () => _kodLokasiError = 'Code not found');
+        return;
+      }
+
+      final loc = result.location;
+      final districtAddress = result.alamat;
+      _setStateKodLokasi(gen, () {
+        _resolvedKodLokasi = result.kodLokasi;
+        _location = loc ?? _location;
+        _address = districtAddress ?? _address;
+        _search.text = districtAddress ?? _address ?? '';
+        _query = districtAddress ?? '';
+        _searchedQuery = null;
+        _suggestions = const [];
+        if (districtAddress != null && _label.text == code) {
+          _label.text = districtAddress;
+        }
+        _kodLokasiError = null;
+        _resolvingKodLokasi = false;
+      });
+
+      if (loc != null) {
+        await _reverseGeocode(loc, districtAddress, gen);
+      }
+    } catch (_) {
+      _setStateKodLokasi(gen, () {
+        _kodLokasiError = 'Lookup failed';
+        _resolvingKodLokasi = false;
+      });
+    }
+  }
+
+  Future<void> _reverseGeocode(
+      GeoPoint loc, String? districtAddress, int gen) async {
+    try {
+      final place = await widget.places.reverseGeocode(loc);
+      if (place == null) return;
+      _setStateKodLokasi(gen, () {
+        _address = place.address;
+        _search.text = place.name;
+        _query = place.name;
+        if (_label.text == districtAddress) {
+          _label.text = place.name;
+        }
+      });
+    } catch (_) {}
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final hasKodLokasi = widget.kodLokasi != null;
     return AlertDialog(
       title: Text(widget.point == null ? 'Add destination' : 'Edit ${widget.point!.label}'),
       content: SizedBox(
@@ -185,6 +296,30 @@ class DestinationEditorState extends State<DestinationEditor> {
                   ),
                 ),
               const SizedBox(height: 8),
+              if (hasKodLokasi) ...[
+                TextField(
+                  controller: _kodLokasiCtrl,
+                  decoration: InputDecoration(
+                    labelText: 'KodLokasi Code',
+                    hintText: 'e.g. SBKK.1.1',
+                    prefixIcon: const Icon(Icons.grid_on),
+                    suffixIcon: _resolvingKodLokasi
+                        ? const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: SizedBox(
+                                width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                          )
+                        : null,
+                  ),
+                  onChanged: _onKodLokasiChanged,
+                ),
+                if (_kodLokasiError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(_kodLokasiError!, style: TextStyle(color: theme.colorScheme.error, fontSize: 12)),
+                  ),
+                const SizedBox(height: 8),
+              ],
               TextFormField(
                 controller: _label,
                 decoration: const InputDecoration(labelText: 'Label'),
@@ -219,6 +354,7 @@ class DestinationEditorState extends State<DestinationEditor> {
                 _location,
                 _address,
                 Duration(minutes: int.parse(_dwell.text)),
+                _resolvedKodLokasi,
               ),
             );
           },

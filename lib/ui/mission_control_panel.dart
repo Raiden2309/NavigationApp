@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/mission.dart';
+import '../services/kod_lokasi_service.dart';
 import '../services/mission_engine.dart';
 import '../services/places_service.dart';
 import 'destination_editor.dart';
@@ -8,10 +9,11 @@ import 'formatting.dart';
 import 'proof_dialog.dart';
 
 class MissionControlPanel extends StatefulWidget {
-  const MissionControlPanel({super.key, required this.engine, required this.places});
+  const MissionControlPanel({super.key, required this.engine, required this.places, this.kodLokasi});
 
   final MissionEngine engine;
   final PlacesService places;
+  final KodLokasiService? kodLokasi;
 
   @override
   State<MissionControlPanel> createState() => _MissionControlPanelState();
@@ -20,6 +22,20 @@ class MissionControlPanel extends StatefulWidget {
 class _MissionControlPanelState extends State<MissionControlPanel> {
   MissionEngine get engine => widget.engine;
   PlacesService get places => widget.places;
+
+  List<MissionPoint> get _sortedDestinations {
+    final routeOrder = engine.routeOrder;
+    final sorted = List<MissionPoint>.from(engine.destinations)
+      ..sort((a, b) {
+        final ia = routeOrder.indexOf(a);
+        final ib = routeOrder.indexOf(b);
+        if (ia == -1 && ib == -1) return 0;
+        if (ia == -1) return 1;
+        if (ib == -1) return -1;
+        return ia.compareTo(ib);
+      });
+    return sorted;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -60,12 +76,12 @@ class _MissionControlPanelState extends State<MissionControlPanel> {
           subtitle: Text(engine.startingPoint.address ?? '${engine.startingPoint.location}'),
         ),
         const Divider(),
-        for (final point in engine.destinations)
-          _DestinationTile(engine: engine, places: places, point: point),
+        for (final point in _sortedDestinations)
+          _DestinationTile(engine: engine, places: places, kodLokasi: widget.kodLokasi, point: point),
         if (!engine.isMissionFinalized) ...[
           const SizedBox(height: 12),
           OutlinedButton.icon(
-            onPressed: () => _openEditor(context, engine, places, null),
+            onPressed: () => _openEditor(context, engine, places, widget.kodLokasi, null),
             icon: const Icon(Icons.add_location_alt),
             label: const Text('Add destination'),
           ),
@@ -234,10 +250,11 @@ class _MissionMetadataCard extends StatelessWidget {
 }
 
 class _DestinationTile extends StatelessWidget {
-  const _DestinationTile({required this.engine, required this.places, required this.point});
+  const _DestinationTile({required this.engine, required this.places, this.kodLokasi, required this.point});
 
   final MissionEngine engine;
   final PlacesService places;
+  final KodLokasiService? kodLokasi;
   final MissionPoint point;
 
   @override
@@ -264,6 +281,18 @@ class _DestinationTile extends StatelessWidget {
               child: Text(
                 'P${point.priority}',
                 style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amber),
+              ),
+            ),
+          if (point.kodLokasi != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.teal.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                point.kodLokasi!,
+                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w500, color: Colors.teal),
               ),
             ),
         ],
@@ -330,7 +359,7 @@ class _DestinationTile extends StatelessWidget {
 
   void _onMenuSelected(BuildContext context, String value) {
     if (value == 'edit') {
-      _openEditor(context, engine, places, point);
+      _openEditor(context, engine, places, kodLokasi, point);
     } else if (value == 'remove') {
       engine.removeDestination(point.id);
     } else if (value.startsWith('priority_')) {
@@ -352,6 +381,7 @@ Future<void> _openEditor(
   BuildContext context,
   MissionEngine engine,
   PlacesService places,
+  KodLokasiService? kodLokasi,
   MissionPoint? point,
 ) async {
   final result = await showDialog<EditorResult>(
@@ -360,6 +390,7 @@ Future<void> _openEditor(
       point: point,
       places: places,
       near: engine.operatorPosition ?? engine.startingPoint.location,
+      kodLokasi: kodLokasi,
     ),
   );
   if (result == null) return;
@@ -370,6 +401,7 @@ Future<void> _openEditor(
       location: result.location,
       address: result.address,
       dwellTime: result.dwellTime,
+      kodLokasi: result.kodLokasi,
     ));
   } else {
     await engine.updateDestination(
@@ -378,6 +410,7 @@ Future<void> _openEditor(
       location: result.location,
       address: result.address,
       dwellTime: result.dwellTime,
+      kodLokasi: result.kodLokasi,
     );
   }
 }

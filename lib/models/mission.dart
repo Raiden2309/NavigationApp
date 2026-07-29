@@ -51,6 +51,8 @@ class MissionPoint {
     this.arrivedAt,
     this.completedAt,
     this.checkedInAt,
+    this.kodLokasi,
+    this.proofRequired = true,
     List<MissionProof>? proofs,
   }) : proofs = proofs ?? [];
 
@@ -74,6 +76,13 @@ class MissionPoint {
   /// Manual check-in timestamp, set by the operator when on site.
   DateTime? checkedInAt;
 
+  /// KodLokasi grid code for this location, when available.
+  String? kodLokasi;
+
+  /// Whether proof (check-in, photo, note) is required to complete this stop.
+  /// When false, the stop can be completed without capturing any proof.
+  bool proofRequired;
+
   /// Proof artifacts (photos, notes, check-ins) captured at this stop.
   final List<MissionProof> proofs;
 
@@ -81,9 +90,10 @@ class MissionPoint {
 
   bool get checkedIn => checkedInAt != null;
 
-  /// Whether this stop can be completed: all three proof types (check-in,
-  /// photo, note) must have been captured.
+  /// Whether this stop can be completed. When [proofRequired] is true, all
+  /// three proof types (check-in, photo, note) must have been captured.
   bool get canComplete {
+    if (!proofRequired) return true;
     final hasCheckIn = checkedIn;
     final hasPhoto = proofs.any((p) => p.type == ProofType.photo);
     final hasNote = proofs.any((p) => p.type == ProofType.note);
@@ -106,6 +116,8 @@ class MissionPoint {
     String? address,
     Duration? dwellTime,
     int? priority,
+    String? kodLokasi,
+    bool? proofRequired,
   }) =>
       MissionPoint(
         id: id,
@@ -118,6 +130,8 @@ class MissionPoint {
         arrivedAt: arrivedAt,
         completedAt: completedAt,
         checkedInAt: checkedInAt,
+        kodLokasi: kodLokasi ?? this.kodLokasi,
+        proofRequired: proofRequired ?? this.proofRequired,
         proofs: List.of(proofs),
       );
 }

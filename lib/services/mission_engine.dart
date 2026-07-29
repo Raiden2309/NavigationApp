@@ -8,6 +8,7 @@ import '../models/mission.dart';
 import 'directions_service.dart';
 import 'location_service.dart';
 import 'mission_clock.dart';
+import 'mission_enrichments.dart';
 
 enum MissionStatus { planning, enRoute, onSite, completed }
 
@@ -30,7 +31,7 @@ class StopEta {
 
 /// Owns mission state: the optimized route, the live operator position, stop
 /// progress and the continuously updated ETAs.
-class MissionEngine extends ChangeNotifier {
+class MissionEngine extends ChangeNotifier implements EngineDelegate {
   MissionEngine({
     required this.startingPoint,
     required List<MissionPoint> destinations,
@@ -54,7 +55,9 @@ class MissionEngine extends ChangeNotifier {
         _destinations = List.of(destinations),
         _directions = directionsService,
         _location = locationService,
-        clock = clock ?? const SystemClock();
+        clock = clock ?? const SystemClock() {
+    enrichments = MissionEnrichments(delegate: this);
+  }
 
   final MissionPoint startingPoint;
 
@@ -66,7 +69,9 @@ class MissionEngine extends ChangeNotifier {
   final DateTime? scheduledAt;
   final DirectionsService _directions;
   final LocationService _location;
+  @override
   final MissionClock clock;
+  @override
   final double arrivalRadiusMeters;
   final Duration refreshInterval;
 
@@ -76,6 +81,7 @@ class MissionEngine extends ChangeNotifier {
 
   /// How often a running mission re-quotes the remaining route against current
   /// traffic, re-ordering the stops still to come when that is quicker.
+  @override
   final Duration reoptimizeInterval;
 
   final List<MissionPoint> _destinations;
@@ -92,39 +98,17 @@ class MissionEngine extends ChangeNotifier {
   bool _planFailed = false;
   DateTime? _lastPlanAttempt;
   Future<void> _planQueue = Future<void>.value();
-  DateTime? _lastReoptimizedAt;
-  bool _lastReoptimizeChangedOrder = false;
-  Duration _lastReoptimizeSaving = Duration.zero;
-  int _reoptimizeBackoff = 1;
 
-  // --- Route deviation detection -------------------------------------------
+  /// Optional enrichments (deviation detection, re-optimization).
+  MissionEnrichments? enrichments;
 
-  /// Snapshot of total remaining driving time (seconds) when the route was
-  /// last planned, used to detect if a deviation makes the ETA worse.
-  int _plannedRemainingDriveTimeSeconds = 0;
-
-  /// Minimum distance (meters) from the planned route polyline before the
-  /// operator is considered to have deviated.
-  double routeDeviationThresholdMeters = 200;
-
-  /// If the ETA increase after a deviation exceeds this, notify Mission
-  /// Control.
-  Duration routeDeviationEtaThreshold = const Duration(minutes: 10);
-
-  bool _hasRouteDeviationNotification = false;
-  String? _routeDeviationMessage;
-  bool _deviationCheckInProgress = false;
-
-  /// Every destination after the starting point, in the order the mission
-  /// operator entered them.
+  @override
   List<MissionPoint> get destinations => List.unmodifiable(_destinations);
 
-  /// Remaining stops in visiting order.
+  @override
   List<MissionPoint> get routeOrder => List.unmodifiable(_routeOrder);
 
-  /// Whether the router may re-order the stops for the fastest route. Off by
-  /// default: the stops are served in the order the mission operator listed
-  /// them, so the newest customer queues last.
+  @override
   bool get optimizeOrder => _optimizeOrder;
 
   Future<void> setOptimizeOrder(bool value) async {
@@ -134,26 +118,36 @@ class MissionEngine extends ChangeNotifier {
     notifyListeners();
   }
 
+  @override
   RoutePlan get plan => _plan;
 
+  @override
   MissionStatus get status => _status;
 
   Object? get lastError => _lastError;
 
   /// When the remaining route was last re-quoted against live traffic.
-  DateTime? get lastReoptimizedAt => _lastReoptimizedAt;
+  DateTime? get lastReoptimizedAt => enrichments?.lastReoptimizedAt;
 
   /// Whether that re-quote changed the visiting order.
-  bool get lastReoptimizeChangedOrder => _lastReoptimizeChangedOrder;
+  bool get lastReoptimizeChangedOrder => enrichments?.lastReoptimizeChangedOrder ?? false;
 
   /// How much the last re-quote took off the completion ETA; negative when
   /// traffic has got worse since the previous plan.
-  Duration get lastReoptimizeSaving => _lastReoptimizeSaving;
+  Duration get lastReoptimizeSaving => enrichments?.lastReoptimizeSaving ?? Duration.zero;
 
+  /// Whether a route deviation notification is active.
+  bool get hasRouteDeviationNotification => enrichments?.hasRouteDeviationNotification ?? false;
+
+  /// Message describing the route deviation.
+  String? get routeDeviationMessage => enrichments?.routeDeviationMessage;
+
+  @override
   GeoPoint? get operatorPosition => _operatorPosition;
 
   MissionPoint? get currentStop => _routeOrder.isEmpty ? null : _routeOrder.first;
 
+  @override
   bool get isRunning => _status == MissionStatus.enRoute || _status == MissionStatus.onSite;
 
   Future<void> initialize() async {
@@ -174,7 +168,7 @@ class MissionEngine extends ChangeNotifier {
   Future<void> start() async {
     if (_routeOrder.isEmpty) return;
     _status = MissionStatus.enRoute;
-    _lastReoptimizedAt = clock.now();
+    enrichments?.onMissionStarted();
     startingPoint.status = MissionPointStatus.completed;
     startingPoint.completedAt ??= clock.now();
     _routeOrder.first.status = MissionPointStatus.enRoute;
@@ -264,12 +258,8 @@ class MissionEngine extends ChangeNotifier {
   bool get isMissionFinalized => missionCompletedAt != null;
   bool get isMissionVerified => missionVerifiedAt != null;
 
-  bool get hasRouteDeviationNotification => _hasRouteDeviationNotification;
-  String? get routeDeviationMessage => _routeDeviationMessage;
-
   void dismissRouteDeviationNotification() {
-    _hasRouteDeviationNotification = false;
-    _routeDeviationMessage = null;
+    enrichments?.dismissRouteDeviationNotification();
     notifyListeners();
   }
 
@@ -306,6 +296,7 @@ class MissionEngine extends ChangeNotifier {
     String? address,
     Duration? dwellTime,
     Object? priority = _sentinel,
+    Object? kodLokasi = _sentinel,
   }) async {
     final index = _destinations.indexWhere((p) => p.id == id);
     if (index < 0) return;
@@ -317,6 +308,9 @@ class MissionEngine extends ChangeNotifier {
     existing.dwellTime = dwellTime ?? existing.dwellTime;
     if (priority != _sentinel) {
       existing.priority = priority as int?;
+    }
+    if (kodLokasi != _sentinel) {
+      existing.kodLokasi = kodLokasi as String?;
     }
     await _replan();
     notifyListeners();
@@ -374,7 +368,7 @@ class MissionEngine extends ChangeNotifier {
     return result;
   }
 
-  /// Live ETA for finishing the whole mission, i.e. leaving the last stop.
+  @override
   DateTime? get missionCompletionEta {
     if (_status == MissionStatus.completed) return null;
     final all = etas;
@@ -403,8 +397,7 @@ class MissionEngine extends ChangeNotifier {
 
   void _refresh() {
     _retryPlanning();
-    _reoptimizeIfDue();
-    _checkRouteDeviation();
+    enrichments?.onRefresh();
     if (!isRunning) {
       notifyListeners();
       return;
@@ -439,71 +432,6 @@ class MissionEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Checks whether the operator has drifted away from the planned route
-  /// polyline. When the resulting ETA increase meets [routeDeviationEtaThreshold],
-  /// the route is auto-switched and Mission Control is notified.
-  void _checkRouteDeviation() {
-    if (!isRunning || _routeOrder.isEmpty) return;
-    if (_hasRouteDeviationNotification || _deviationCheckInProgress) return;
-    final position = _operatorPosition;
-    if (position == null) return;
-
-    final routePolyline = _plan.fullPolyline;
-    if (routePolyline.length < 2) return;
-
-    final distanceFrom = distanceFromPath(routePolyline, position);
-    if (distanceFrom > routeDeviationThresholdMeters) {
-      unawaited(_handleRouteDeviation(position));
-    }
-  }
-
-  Future<void> _handleRouteDeviation(GeoPoint position) async {
-    _deviationCheckInProgress = true;
-    final pending = _destinations.where((p) => !p.isCompleted).toList();
-    if (pending.isEmpty) {
-      _deviationCheckInProgress = false;
-      return;
-    }
-
-    try {
-      final deviationPlan = await _directions.optimizedRoute(
-        origin: position,
-        destinations: [for (final p in pending) p.location],
-        departureTime: clock.now(),
-        dwellTimes: [for (final p in pending) p.dwellTime],
-        optimizeOrder: _optimizeOrder,
-      );
-
-      final newEtaSeconds = deviationPlan.totalDrivingTime.inSeconds;
-      final plannedEtaSeconds = _plannedRemainingDriveTimeSeconds;
-      final diffSeconds = newEtaSeconds - plannedEtaSeconds;
-
-      if (diffSeconds >= routeDeviationEtaThreshold.inSeconds) {
-        // Auto-switch to the route from the operator's current position.
-        final placed = [
-          for (final index in deviationPlan.waypointOrder)
-            if (index >= 0 && index < pending.length) pending[index],
-        ];
-        _plan = deviationPlan;
-        _routeOrder = placed;
-        _recomputeLegDistances();
-        _followPlan();
-
-        final extraMinutes = (diffSeconds / 60).round();
-        _hasRouteDeviationNotification = true;
-        _routeDeviationMessage =
-            'Driver deviated from planned route. ETA increased by $extraMinutes min.';
-        _plannedRemainingDriveTimeSeconds = newEtaSeconds;
-        notifyListeners();
-      }
-    } catch (_) {
-      // Routing failure during deviation check — the existing retry logic
-      // will handle a full replan on the next tick.
-    } finally {
-      _deviationCheckInProgress = false;
-    }
-  }
-
   /// A route request can fail transiently (rate limit, a dropped connection),
   /// leaving the operator with no route at all or a stale one, so keep
   /// re-planning in the background until one succeeds.
@@ -515,34 +443,6 @@ class MissionEngine extends ChangeNotifier {
     if (last != null && now.difference(last) < planRetryInterval) return;
     _lastPlanAttempt = now;
     unawaited(_replan().then((_) => notifyListeners()));
-  }
-
-  /// Traffic moves while the operator drives, so a running mission keeps
-  /// re-quoting the stops still ahead and re-orders them when that is faster.
-  void _reoptimizeIfDue() {
-    if (!isRunning || _replanning || _routeOrder.isEmpty) return;
-    if (reoptimizeInterval <= Duration.zero) return;
-    final last = _lastReoptimizedAt;
-    final now = clock.now();
-    if (last != null && now.difference(last) < reoptimizeInterval * _reoptimizeBackoff) return;
-    _lastReoptimizedAt = now;
-    unawaited(_reoptimize());
-  }
-
-  Future<void> _reoptimize() async {
-    final previousOrder = [for (final point in _routeOrder) point.id];
-    final previousEta = missionCompletionEta;
-    await _replan();
-    // Routing quota is finite, so a failing loop slows itself down instead of
-    // hammering the API every interval.
-    _reoptimizeBackoff = _planFailed ? math.min(_reoptimizeBackoff * 2, 16) : 1;
-    _lastReoptimizedAt = clock.now();
-    _lastReoptimizeChangedOrder =
-        !listEquals(previousOrder, [for (final point in _routeOrder) point.id]);
-    final eta = missionCompletionEta;
-    _lastReoptimizeSaving =
-        previousEta == null || eta == null ? Duration.zero : previousEta.difference(eta);
-    notifyListeners();
   }
 
   void _arriveAt(MissionPoint stop) {
@@ -669,8 +569,7 @@ class MissionEngine extends ChangeNotifier {
       }
       _routeOrder = ordered;
       _recomputeLegDistances();
-      // Snapshot the planned remaining drive time for deviation detection.
-      _plannedRemainingDriveTimeSeconds = _plan.totalDrivingTime.inSeconds;
+      enrichments?.onPlanUpdated();
       for (final point in _routeOrder.skip(1)) {
         if (point.status == MissionPointStatus.enRoute) {
           point.status = MissionPointStatus.pending;
@@ -775,6 +674,29 @@ class MissionEngine extends ChangeNotifier {
       _followPlan();
       simulator.resume();
     }
+  }
+
+  // --- Controlled access for MissionEnrichments --------------------------
+
+  @override
+  DirectionsService get directionsService => _directions;
+  @override
+  LocationService get locationService => _location;
+  @override
+  bool get enrichmentsIsReplanning => _replanning;
+  @override
+  bool get enrichmentsPlanFailed => _planFailed;
+  @override
+  Future<void> enrichmentsReplan() => _replan();
+  @override
+  void enrichmentNotify() => notifyListeners();
+
+  @override
+  void applyDeviationRoute(RoutePlan plan, List<MissionPoint> routeOrder) {
+    _plan = plan;
+    _routeOrder = routeOrder;
+    _recomputeLegDistances();
+    _followPlan();
   }
 
   @override

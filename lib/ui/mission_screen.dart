@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/geo.dart';
 import '../models/mission.dart';
+import '../services/kod_lokasi_service.dart';
 import '../services/mission_clock.dart';
 import '../services/mission_engine.dart';
 import '../services/places_service.dart';
@@ -17,12 +18,14 @@ class MissionScreen extends StatefulWidget {
     super.key,
     required this.engine,
     required this.places,
+    this.kodLokasi,
     this.dataSource = 'Mock data',
     this.liveApis = false,
   });
 
   final MissionEngine engine;
   final PlacesService places;
+  final KodLokasiService? kodLokasi;
 
   /// Where roads and places come from, e.g. `Google APIs` or `OSRM + OSM`.
   final String dataSource;
@@ -80,7 +83,7 @@ class _MissionScreenState extends State<MissionScreen> with SingleTickerProvider
                 operatorPosition: engine.operatorPosition,
                 onMapTap: _editing ? _addPointAt : null,
               );
-              final panel = _Panel(tabs: _tabs, engine: engine, places: widget.places);
+              final panel = _Panel(tabs: _tabs, engine: engine, places: widget.places, kodLokasi: widget.kodLokasi);
               if (constraints.maxWidth < 900) {
                 return Column(
                   children: [
@@ -124,11 +127,12 @@ class _MissionScreenState extends State<MissionScreen> with SingleTickerProvider
 }
 
 class _Panel extends StatelessWidget {
-  const _Panel({required this.tabs, required this.engine, required this.places});
+  const _Panel({required this.tabs, required this.engine, required this.places, this.kodLokasi});
 
   final TabController tabs;
   final MissionEngine engine;
   final PlacesService places;
+  final KodLokasiService? kodLokasi;
 
   @override
   Widget build(BuildContext context) {
@@ -146,7 +150,7 @@ class _Panel extends StatelessWidget {
             controller: tabs,
             children: [
               OperatorPanel(engine: engine),
-              MissionControlPanel(engine: engine, places: places),
+              MissionControlPanel(engine: engine, places: places, kodLokasi: kodLokasi),
             ],
           ),
         ),

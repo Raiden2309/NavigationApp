@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'models/geo.dart';
 import 'models/mission.dart';
 import 'services/directions_service.dart';
+import 'services/kod_lokasi_service.dart';
 import 'services/location_service.dart';
 import 'services/mission_clock.dart';
 import 'services/mission_engine.dart';
@@ -12,6 +13,10 @@ import 'ui/mission_screen.dart';
 /// Google Maps API key for routing and places.
 /// Set via: `--dart-define=GOOGLE_MAPS_API_KEY=...`
 const String googleMapsApiKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
+
+/// KodLokasi API key for grid-code location lookup.
+/// Set via: `--dart-define=KODLOKASI_API_KEY=...`
+const String kodLokasiApiKey = String.fromEnvironment('KODLOKASI_API_KEY');
 
 /// Use real device GPS instead of simulated operator.
 /// Set via: `--dart-define=USE_DEVICE_LOCATION=true`.
@@ -46,6 +51,7 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
   late final LocationService _location;
   late final MissionEngine _engine;
   late final PlacesService _places;
+  late final KodLokasiService _kodLokasi;
 
   /// Real dispatch sites in Kota Kinabalu; Point A is the depot.
   static final _startingPoint = MissionPoint(
@@ -87,6 +93,7 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
             clock: _clock,
           );
     _places = _buildPlacesService();
+    _kodLokasi = KodLokasiService(apiKey: kodLokasiApiKey);
     _engine = MissionEngine(
       startingPoint: _startingPoint,
       destinations: _destinations,
@@ -128,6 +135,7 @@ class _MissionRouterAppState extends State<MissionRouterApp> {
       home: MissionScreen(
         engine: _engine,
         places: _places,
+        kodLokasi: _kodLokasi,
         dataSource: switch (_activeBackend) {
           'google' => 'Google APIs',
           'osrm' => 'OSRM + OSM',

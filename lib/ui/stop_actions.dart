@@ -74,6 +74,7 @@ class StopActions extends StatelessWidget {
   }
 
   String _missingProofsText(MissionPoint stop) {
+    if (!stop.proofRequired) return 'Proof not required';
     final missing = <String>[];
     if (!stop.checkedIn) missing.add('check-in');
     if (!stop.proofs.any((p) => p.type == ProofType.photo)) missing.add('photo');
